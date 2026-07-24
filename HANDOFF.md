@@ -60,6 +60,31 @@ and take the **max** usage per id, never the sum.
 Cross-check when changing any of this: the chart's "today" column and the Today
 key are computed independently and must agree exactly.
 
+## Multi-key canvases: two different mechanisms
+
+Both the 7-day chart and Activity Rain draw one image across many keys, but they
+get their geometry from opposite directions — don't copy the wrong one.
+
+- **Chart** — fixed 8x4 positions inside a *bundled profile*, because it has to
+  own keys the user never placed. Coordinates are known up front.
+- **Rain** — no profile at all. The user drops N copies of one action wherever
+  they like; `renderRain()` takes the **bounding box of the live `willAppear`
+  coordinates** as the canvas, grouped by device. Any rectangle works, moving it
+  needs no config, and a lone key renders the whole animation by itself.
+
+Anything that only adds keys to the user's own profile should use the bounding-box
+approach — a bundled profile is only worth it when you must take over the deck.
+
+Shared trick: render in whole-canvas coordinates, translate by `-col*144, -row*144`
+per key, let the viewBox clip. Cull off-key geometry before emitting it or each
+key's SVG carries the entire canvas.
+
+Rain specifics: lane speed and phase come from a `Math.sin` hash of the lane
+index, **not** `Math.random()` — lanes have to be identical frame to frame.
+Frames run at ~9fps and only while a session is busy; on going idle it pushes one
+final calm frame and then stops sending. Keep that guard, 12 keys of `setImage`
+at speed is real load on the Stream Deck app.
+
 ## Not every `~/.claude/sessions/*.json` is a session the user can see
 
 `pidAlive()` is necessary but not sufficient. Each file carries an

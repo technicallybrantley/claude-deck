@@ -25,6 +25,7 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Quick Prompt** | Configurable: opens quick chat and pastes a canned prompt (optionally presses Enter). Overwrites the clipboard. |
 | **Claude Custom** | A Claude-styled spare key that opens anything you set: app, URL, or folder. |
 | **7-Day Chart** | Press to turn the *whole deck* into a 7-day block chart of your Claude Code activity. Stream Deck XL only. |
+| **Activity Rain** | Token rain that falls across a block of keys while Claude Code is working. Press to pause. |
 
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
@@ -46,6 +47,22 @@ The chart reads the same local transcripts as the **Today** key, so it counts
 Claude Code activity **on this machine only** — expect it to sit below the
 account-wide gauges if you also use Claude Desktop, claude.ai, or another
 computer.
+
+### Activity Rain
+
+Drop several **Activity Rain** keys next to each other — a 3x4 block works well —
+and they stop being separate keys: the plugin takes their bounding box as one
+canvas and each key draws its slice of a single animation. Put the block
+anywhere, in any rectangle you like; nothing is hardcoded, and moving or
+resizing it needs no configuration.
+
+The motion is real telemetry, not decoration:
+
+- **Fall speed** scales with your burn rate (tokens/hour).
+- **How many lanes run** scales with how many sessions are working.
+- **At rest** the lanes fade to a dim grid with the spark in the middle, and the
+  plugin stops pushing frames entirely — it only animates while something is
+  actually working. Press any key in the block to pause it by hand.
 
 | Limits at a glance | Agents at a glance |
 |---|---|

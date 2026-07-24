@@ -3902,6 +3902,49 @@ function chartOpenKey(days, metric) {
     <rect x="13" y="103" width="119" height="2" rx="1" fill="${C.track}"/>
     <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="700" fill="${C.text}">${fmtNum(total)}${metric === "msgs" ? " msgs" : " tok"}</text>`);
 }
+var RAIN_STEP = 22;
+var RAIN_BH = 16;
+var RAIN_TRAIL = 8;
+var RAIN_LANE_W = 36;
+var fracOf = (n) => n - Math.floor(n);
+var laneHash = (i, salt) => fracOf(Math.sin((i + 1) * 12.9898 + salt * 78.233) * 43758.5453);
+function rainCellKey(lc, lr, cols, rows, t, busy, burn) {
+  const W = cols * KEY, H = rows * KEY;
+  const lanes = Math.max(1, Math.round(W / RAIN_LANE_W));
+  const laneW = W / lanes;
+  const bw = Math.min(28, Math.max(10, laneW - 12));
+  const ox = lc * KEY, oy = lr * KEY;
+  const trailLen = RAIN_TRAIL * RAIN_STEP;
+  const speed = 55 + Math.min(150, (burn ?? 0) / 4e5);
+  const density = busy > 0 ? Math.min(1, 0.25 + 0.18 * busy) : 0;
+  const streams = density > 0.55 ? 2 : 1;
+  let out = "";
+  for (let i = 0; i < lanes; i++) {
+    const x = i * laneW + (laneW - bw) / 2 - ox;
+    if (x > KEY + 2 || x + bw < -2) continue;
+    if (laneHash(i, 3) >= density) {
+      for (let y = H % RAIN_STEP / 2; y < H; y += RAIN_STEP) {
+        const ly = y - oy;
+        if (ly > KEY + 2 || ly + RAIN_BH < -2) continue;
+        out += `<rect x="${x.toFixed(1)}" y="${ly.toFixed(1)}" width="${bw.toFixed(1)}" height="${RAIN_BH}" rx="4" fill="${C.track}" opacity="0.13"/>`;
+      }
+      continue;
+    }
+    const sp = speed * (0.7 + 0.6 * laneHash(i, 1));
+    for (let s = 0; s < streams; s++) {
+      const head = fracOf(laneHash(i, 2) + s / streams + t / 1e3 * sp / (H + trailLen)) * (H + trailLen);
+      for (let j = 0; j <= RAIN_TRAIL; j++) {
+        const y = head - j * RAIN_STEP - oy;
+        if (y > KEY + 2 || y + RAIN_BH < -2) continue;
+        const fade = Math.pow(1 - j / (RAIN_TRAIL + 1), 1.4);
+        out += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${bw.toFixed(1)}" height="${RAIN_BH}" rx="4" fill="${j === 0 ? C.accentHi : C.accent}" opacity="${(j === 0 ? 1 : 0.9 * fade).toFixed(2)}"/>`;
+      }
+    }
+  }
+  if (!density && lc === Math.floor((cols - 1) / 2) && lr === Math.floor((rows - 1) / 2))
+    out += sparkAt(72, 72, C.accent, 0.2, 2.2);
+  return svgWrap(out, false);
+}
 function fmtReset(iso) {
   if (!iso) return "";
   const ms = new Date(iso).getTime() - Date.now();
@@ -4427,6 +4470,8 @@ function render(context, kind) {
       const sub = n === 0 ? a > 0 ? `${a} sdk only` : "none running" : (busy > 0 ? `${busy} working` : "all idle") + (a > 0 ? ` +${a} sdk` : "");
       return setImage(context, bigCountKey("CLAUDE CODE", n, sub, busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null, a > 0 ? 15 : 17));
     }
+    case "activity":
+      return renderRain();
     case "chart-open":
       return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
     case "chart-cell": {
@@ -4466,6 +4511,34 @@ function chartCell(column, row) {
 }
 function renderAll(kinds) {
   for (const [context, v] of views) if (kinds.includes(v.kind)) render(context, v.kind);
+}
+var rainT0 = Date.now();
+var rainPaused = false;
+var rainRunning = false;
+function renderRain() {
+  const byDevice = /* @__PURE__ */ new Map();
+  for (const [context, v] of views) {
+    if (v.kind !== "activity") continue;
+    const key = v.device ?? "";
+    if (!byDevice.has(key)) byDevice.set(key, []);
+    byDevice.get(key).push([context, v]);
+  }
+  if (!byDevice.size) return;
+  const t = Date.now() - rainT0;
+  const busy = rainPaused ? 0 : state.sessions.filter((s) => s.status && s.status !== "idle").length;
+  const burn = state.burn?.tokensHour ?? 0;
+  for (const group of byDevice.values()) {
+    let minC = Infinity, minR = Infinity, maxC = -Infinity, maxR = -Infinity;
+    for (const [, v] of group) {
+      minC = Math.min(minC, v.coords.column);
+      maxC = Math.max(maxC, v.coords.column);
+      minR = Math.min(minR, v.coords.row);
+      maxR = Math.max(maxR, v.coords.row);
+    }
+    const cols = maxC - minC + 1, rows = maxR - minR + 1;
+    for (const [context, v] of group)
+      setImage(context, rainCellKey(v.coords.column - minC, v.coords.row - minR, cols, rows, t, busy, burn));
+  }
 }
 function launchDesktop(context) {
   const child = spawn("explorer.exe", [desktopAppId], { detached: true, stdio: "ignore" });
@@ -4541,6 +4614,10 @@ function runCustom(command, context) {
 }
 function onKeyDown(context, kind, device) {
   switch (kind) {
+    case "activity":
+      rainPaused = !rainPaused;
+      renderRain();
+      return showOk(context);
     case "chart-open": {
       if (!device) return showAlert(context);
       const type = deviceTypes.get(device);
@@ -4646,19 +4723,42 @@ if (process.argv.includes("--selftest")) {
   })();
 } else if (process.argv.includes("--preview")) {
   (async () => {
-    await pollWeek();
-    chartMetric = argOf("--metric") ?? "tokens";
     const body = (uri) => decodeURIComponent(uri.slice(uri.indexOf(",") + 1)).replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
     const place = (uri, x, y) => `<svg x="${x}" y="${y}" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">${body(uri)}</svg>`;
     const PITCH = KEY + 8;
-    let inner = "";
-    for (let col = 0; col < CHART_COLS; col++)
-      for (let row = 0; row < CHART_ROWS; row++)
-        inner += place(chartCell(col, row), col * PITCH, row * PITCH);
-    const openY = CHART_ROWS * PITCH + 24;
-    inner += place(chartOpenKey(state.week?.days ?? [], chartMetric), 0, openY);
-    const w = CHART_COLS * PITCH - 8, h = openY + KEY;
-    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="#0b0a0e"/>${inner}<text x="${KEY + 20}" y="${openY + 42}" font-family="Segoe UI, sans-serif" font-size="20" fill="#9b96a8">launcher key (on the normal profile) \u2014 metric: ${chartMetric}</text></svg>`;
+    const label = (x, y, s) => `<text x="${x}" y="${y}" font-family="Segoe UI, sans-serif" font-size="19" fill="#9b96a8">${s}</text>`;
+    let inner = "", w, h;
+    if (process.argv.includes("--rain")) {
+      await pollSessions();
+      await pollBurn();
+      const cols = Number(argOf("--cols") ?? 3), rows = Number(argOf("--rows") ?? 4);
+      const busy = Number(argOf("--busy") ?? Math.max(1, state.sessions.filter((s) => s.status && s.status !== "idle").length));
+      const burn = Number(argOf("--burn") ?? state.burn?.tokensHour ?? 0);
+      const frames = [0, 400, 800, -1];
+      const blockW = cols * PITCH;
+      frames.forEach((t, k) => {
+        const x0 = k * (blockW + 34);
+        for (let c = 0; c < cols; c++)
+          for (let r = 0; r < rows; r++)
+            inner += place(rainCellKey(c, r, cols, rows, Math.max(0, t), t < 0 ? 0 : busy, burn), x0 + c * PITCH, 40 + r * PITCH);
+        inner += label(x0, 28, t < 0 ? "at rest (nothing busy)" : `t = ${t}ms`);
+      });
+      w = frames.length * (blockW + 34) - 34;
+      h = 40 + rows * PITCH;
+      log(`rain preview: ${cols}x${rows}, busy=${busy}, burn=${fmtNum(burn)}/hr`);
+    } else {
+      await pollWeek();
+      chartMetric = argOf("--metric") ?? "tokens";
+      for (let col = 0; col < CHART_COLS; col++)
+        for (let row = 0; row < CHART_ROWS; row++)
+          inner += place(chartCell(col, row), col * PITCH, row * PITCH);
+      const openY = CHART_ROWS * PITCH + 24;
+      inner += place(chartOpenKey(state.week?.days ?? [], chartMetric), 0, openY);
+      inner += label(KEY + 20, openY + 42, `launcher key (on the normal profile) \u2014 metric: ${chartMetric}`);
+      w = CHART_COLS * PITCH - 8;
+      h = openY + KEY;
+    }
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="#0b0a0e"/>${inner}</svg>`;
     const out = argOf("--out") ?? path.join(process.cwd(), "chart-preview.svg");
     fs.writeFileSync(out, svg);
     log(`preview written: ${out}`);
@@ -4736,6 +4836,22 @@ if (process.argv.includes("--selftest")) {
   setInterval(() => {
     if ([...views.values()].some((v) => v.kind === "chart-cell" || v.kind === "chart-open")) pollWeek();
   }, 3e5);
+  setInterval(() => {
+    if (![...views.values()].some((v) => v.kind === "activity")) {
+      rainRunning = false;
+      return;
+    }
+    const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
+    if (busy === 0 || rainPaused) {
+      if (rainRunning) {
+        rainRunning = false;
+        renderRain();
+      }
+      return;
+    }
+    rainRunning = true;
+    renderRain();
+  }, 110);
   setInterval(() => {
     animPhase = (animPhase + 1) % 3;
     const kinds = [];

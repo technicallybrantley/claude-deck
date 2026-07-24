@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Claude Deck",
-  "Version": "1.1.0.0",
+  "Version": "1.2.0.0",
   "Author": "Brantley",
   "Description": "Live Claude usage limits, running Claude Code sessions, and quick-launch keys for Claude Desktop.",
   "UUID": "com.technicallybrantley.claude-deck",
@@ -146,6 +146,16 @@
       "Controllers": ["Keypad"],
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/prompt", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.technicallybrantley.claude-deck.activity",
+      "Name": "Activity Rain",
+      "Tooltip": "Animated token rain while Claude Code is working. Drop several copies in a block (3x4 works well) and they arrange themselves into one canvas. Press to pause.",
+      "Icon": "imgs/rain",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/rain", "ShowTitle": false }]
     },
     {
       "UUID": "com.technicallybrantley.claude-deck.chart-open",
