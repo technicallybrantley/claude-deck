@@ -24,9 +24,28 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Focus Session** | Press to cycle running sessions and bring each one's terminal window to the front. |
 | **Quick Prompt** | Configurable: opens quick chat and pastes a canned prompt (optionally presses Enter). Overwrites the clipboard. |
 | **Claude Custom** | A Claude-styled spare key that opens anything you set: app, URL, or folder. |
+| **7-Day Chart** | Press to turn the *whole deck* into a 7-day block chart of your Claude Code activity. Stream Deck XL only. |
 
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
+
+### The 7-day chart
+
+Pressing **7-Day Chart** switches the deck to a bundled profile where all 32 keys
+become one chart: seven day-columns of stacked blocks (oldest on the left, today
+highlighted), and a side column with the 7-day total, the peak day, the daily
+average, and a **BACK** key. Back returns to whatever profile and page you were
+on when you pressed it.
+
+- Press any day column to switch the whole chart between **tokens** and **messages**.
+- Press any side-panel stat to re-read the transcripts.
+- A bar is one continuous column drawn across four keys, so it has full pixel
+  resolution — not four steps.
+
+The chart reads the same local transcripts as the **Today** key, so it counts
+Claude Code activity **on this machine only** — expect it to sit below the
+account-wide gauges if you also use Claude Desktop, claude.ai, or another
+computer.
 
 | Limits at a glance | Agents at a glance |
 |---|---|
@@ -50,8 +69,9 @@ The sessions key shows an animated dot cycle while any session is actively worki
 
 ```powershell
 npm install
-npm run build      # bundles src/plugin.js -> com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs
+npm run build      # regenerates the bundled profile, then bundles src/plugin.js -> bin/plugin.mjs
 npm run selftest   # exercises the usage endpoint + local data without Stream Deck
+npm run preview -- --out chart.svg [--metric msgs]   # renders the 7-day chart to one SVG
 ```
 
 The plugin speaks the Stream Deck WebSocket protocol directly — the only runtime dependency is `ws`. Debug log: `claude-deck.log` inside the installed plugin folder.
@@ -60,7 +80,7 @@ The plugin speaks the Stream Deck WebSocket protocol directly — the only runti
 
 - **Limits**: `GET https://api.anthropic.com/api/oauth/usage` authorized with the OAuth token Claude Code keeps in `~/.claude/.credentials.json`. This is the same source the `/usage` command uses. It is not a publicly documented API, so it may change; the plugin logs the raw response shape to make fixes easy.
 - **Sessions**: `~/.claude/sessions/*.json`, filtered to live processes.
-- **Today**: parsed from `~/.claude/projects/**/*.jsonl` transcripts (Claude Code activity only — desktop chats don't write local logs, though they do count toward the limit gauges).
+- **Today / 7-Day Chart**: parsed from `~/.claude/projects/**/*.jsonl` transcripts (Claude Code activity only — desktop chats don't write local logs, though they do count toward the limit gauges). The usage endpoint only reports *current* utilization, so any history has to come from these local files.
 
 ## Notes
 

@@ -5,8 +5,10 @@
   "type": "module",
   "description": "Stream Deck plugin: Claude usage, active sessions, and shortcuts",
   "scripts": {
-    "build": "esbuild src/plugin.js --bundle --platform=node --format=esm --outfile=com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
-    "selftest": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --selftest"
+    "profile": "node tools/make-chart-profile.mjs",
+    "build": "node tools/make-chart-profile.mjs && esbuild src/plugin.js --bundle --platform=node --format=esm --outfile=com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
+    "selftest": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --selftest",
+    "preview": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --preview"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -3756,6 +3756,8 @@ var C = {
   dim: "#9b96a8",
   accent: "#d97757",
   // Claude orange
+  accentHi: "#f0a184",
+  // lighter accent — marks "today" in the 7-day chart
   ok: "#4ade80",
   warn: "#fbbf24",
   bad: "#f87171",
@@ -3772,8 +3774,8 @@ try {
 } catch {
   WATERMARK = sparkAt(72, 76, C.accent, 0.08, 2.4);
 }
-function svgWrap(inner) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" rx="18" fill="${C.bg}"/>${WATERMARK}${inner}</svg>`;
+function svgWrap(inner, mark = true) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" rx="18" fill="${C.bg}"/>${mark ? WATERMARK : ""}${inner}</svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 function gaugeKey(label, pct, sub, pulsePhase = null) {
@@ -3836,6 +3838,70 @@ function labelKey(title, label, sub, accent = C.accent) {
     ${lineSvg}
     <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
+var CHART_COLS = 8;
+var CHART_ROWS = 4;
+var KEY = 144;
+var CHART_DAYS = 7;
+var LABEL_H = 40;
+var AXIS_Y = CHART_ROWS * KEY - LABEL_H;
+var BLOCK_H = 20;
+var BLOCK_GAP = 4;
+var BLOCKS = 21;
+var dayVal = (d, metric) => (metric === "msgs" ? d?.msgs : d?.tokens) ?? 0;
+function barCellKey(d, row, max, metric) {
+  const v = dayVal(d, metric);
+  const frac = max > 0 ? Math.min(1, v / max) : 0;
+  const filled = frac * BLOCKS;
+  const full = Math.floor(filled);
+  const part = filled - full;
+  const col = d.isToday ? C.accentHi : C.accent;
+  let out = "";
+  for (let i = 0; i < BLOCKS; i++) {
+    const y = AXIS_Y - i * (BLOCK_H + BLOCK_GAP) - BLOCK_H - row * KEY;
+    if (y > KEY || y + BLOCK_H < 0) continue;
+    let fill = C.track, op = 0.32;
+    if (i < full) {
+      fill = col;
+      op = 1;
+    } else if (i === full && part > 0.03) {
+      fill = col;
+      op = 0.45 + 0.55 * part;
+    }
+    out += `<rect x="26" y="${y}" width="92" height="${BLOCK_H}" rx="5" fill="${fill}" opacity="${op}"/>`;
+  }
+  if (row === CHART_ROWS - 1) {
+    const a = AXIS_Y - row * KEY;
+    out += `<rect x="14" y="${a}" width="116" height="2" rx="1" fill="${d.isToday ? col : C.track}"/>
+      <text x="72" y="${a + 20}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="600" letter-spacing="0.5" fill="${d.isToday ? col : C.dim}">${esc(d.label)}</text>
+      <text x="72" y="${a + 37}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="${C.text}">${fmtNum(v)}</text>`;
+  }
+  return svgWrap(out, false);
+}
+function chartStatKey(title, value, sub, color = C.accent) {
+  return svgWrap(`
+    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
+    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="36" font-weight="700" fill="${color}">${esc(value)}</text>
+    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`, false);
+}
+function backCellKey() {
+  return svgWrap(`
+    <path d="M86 34 L54 68 L86 102" fill="none" stroke="${C.accent}" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" letter-spacing="1" fill="${C.text}">BACK</text>`, false);
+}
+function chartOpenKey(days, metric) {
+  const vals = days.map((d) => dayVal(d, metric));
+  const max = Math.max(...vals, 1);
+  const bars = days.length ? days.map((d, i) => {
+    const h = Math.max(4, Math.round(62 * (dayVal(d, metric) / max)));
+    return `<rect x="${13 + i * 17}" y="${102 - h}" width="13" height="${h}" rx="3" fill="${d.isToday ? C.accentHi : C.accent}" opacity="${d.isToday ? 1 : 0.75}"/>`;
+  }).join("") : `<text x="72" y="84" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" fill="${C.dim}">--</text>`;
+  const total = vals.reduce((a, b) => a + b, 0);
+  return svgWrap(`
+    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">7 DAYS</text>
+    ${bars}
+    <rect x="13" y="103" width="119" height="2" rx="1" fill="${C.track}"/>
+    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="700" fill="${C.text}">${fmtNum(total)}${metric === "msgs" ? " msgs" : " tok"}</text>`);
+}
 function fmtReset(iso) {
   if (!iso) return "";
   const ms = new Date(iso).getTime() - Date.now();
@@ -3863,6 +3929,8 @@ var state = {
   usageAt: 0,
   sessions: [],
   today: null,
+  week: null,
+  // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
   loggedRaw: false
@@ -4070,6 +4138,119 @@ async function pollToday() {
     log("today poll failed:", String(e));
   }
 }
+var weekCache = /* @__PURE__ */ new Map();
+var lastWeekPoll = 0;
+var chartMetric = "tokens";
+var DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+function weekDayKeys() {
+  const d = /* @__PURE__ */ new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (CHART_DAYS - 1));
+  const out = [];
+  for (let i = 0; i < CHART_DAYS; i++) {
+    out.push({ day: localDay(d.getTime()), label: DOW[d.getDay()] });
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+async function scanWeekFile(fp, wanted) {
+  const out = {};
+  const bucket = (day) => out[day] ??= { tokens: 0, msgs: 0 };
+  let text;
+  try {
+    text = await fsp.readFile(fp, "utf8");
+  } catch {
+    return out;
+  }
+  const reqs = /* @__PURE__ */ new Map();
+  const seenMsg = /* @__PURE__ */ new Set();
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let j;
+    try {
+      j = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!j.timestamp) continue;
+    const day = localDay(j.timestamp);
+    if (!wanted.has(day)) continue;
+    const mid = j.message?.id ?? j.requestId;
+    if (j.type === "user") bucket(day).msgs++;
+    else if (j.type === "assistant" && (!mid || !seenMsg.has(mid))) {
+      if (mid) seenMsg.add(mid);
+      bucket(day).msgs++;
+    }
+    const u = j.message?.usage;
+    if (!u) continue;
+    const tok = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    if (!mid) {
+      bucket(day).tokens += tok;
+      continue;
+    }
+    const r = reqs.get(mid);
+    if (r) r.tok = Math.max(r.tok, tok);
+    else reqs.set(mid, { day, tok });
+  }
+  for (const r of reqs.values()) bucket(r.day).tokens += r.tok;
+  return out;
+}
+async function pollWeek() {
+  lastWeekPoll = Date.now();
+  try {
+    const keys = weekDayKeys();
+    const from = keys[0].day;
+    const wanted = new Set(keys.map((k) => k.day));
+    const start = /* @__PURE__ */ new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (CHART_DAYS - 1));
+    const startMs = start.getTime();
+    const totals = new Map(keys.map((k) => [k.day, { tokens: 0, msgs: 0 }]));
+    const dirs = await fsp.readdir(PROJECTS_DIR).catch(() => []);
+    for (const dname of dirs) {
+      const dir = path.join(PROJECTS_DIR, dname);
+      let files;
+      try {
+        files = await fsp.readdir(dir);
+      } catch {
+        continue;
+      }
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const fp = path.join(dir, f);
+        let st;
+        try {
+          st = await fsp.stat(fp);
+        } catch {
+          continue;
+        }
+        if (st.mtimeMs < startMs) continue;
+        let c = weekCache.get(fp);
+        if (!c || c.size !== st.size || c.from !== from) {
+          c = { size: st.size, from, days: await scanWeekFile(fp, wanted) };
+          weekCache.set(fp, c);
+        }
+        for (const [day, b] of Object.entries(c.days)) {
+          const t = totals.get(day);
+          if (!t) continue;
+          t.tokens += b.tokens;
+          t.msgs += b.msgs;
+        }
+      }
+    }
+    for (const fp of weekCache.keys()) {
+      if (weekCache.get(fp).from !== from) weekCache.delete(fp);
+    }
+    const today = localDay(Date.now());
+    state.week = {
+      days: keys.map((k) => ({ ...k, ...totals.get(k.day), isToday: k.day === today })),
+      at: Date.now()
+    };
+    renderAll(["chart-cell", "chart-open"]);
+  } catch (e) {
+    log("week poll failed:", String(e));
+  }
+}
 var hourTracker = /* @__PURE__ */ new Map();
 async function pollBurn() {
   try {
@@ -4166,8 +4347,12 @@ function argOf(name) {
 var views = /* @__PURE__ */ new Map();
 var cycle = /* @__PURE__ */ new Map();
 var focusIdx = /* @__PURE__ */ new Map();
+var deviceTypes = /* @__PURE__ */ new Map();
 var ws = null;
 var animPhase = 0;
+var pluginUUID = null;
+var CHART_PROFILE = "Claude 7-Day Chart";
+var DEVICE_XL = 2;
 function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
 }
@@ -4175,6 +4360,7 @@ var setImage = (context, image) => send({ event: "setImage", context, payload: {
 var setTitle = (context) => send({ event: "setTitle", context, payload: { title: "", target: 0 } });
 var showOk = (context) => send({ event: "showOk", context });
 var showAlert = (context) => send({ event: "showAlert", context });
+var switchProfile = (device, profile) => send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
 var kindOf = (action) => action.replace("com.technicallybrantley.claude-deck.", "");
 function render(context, kind) {
   switch (kind) {
@@ -4232,6 +4418,12 @@ function render(context, kind) {
       const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
       return setImage(context, bigCountKey("CLAUDE CODE", n, busy > 0 ? `${busy} working` : n > 0 ? "all idle" : "none running", busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null));
     }
+    case "chart-open":
+      return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
+    case "chart-cell": {
+      const c = views.get(context)?.coords ?? { column: 0, row: 0 };
+      return setImage(context, chartCell(c.column, c.row));
+    }
     case "today": {
       const t = state.today;
       return setImage(context, linesKey("TODAY", [
@@ -4241,6 +4433,27 @@ function render(context, kind) {
       ]));
     }
   }
+}
+function chartCell(column, row) {
+  const days = state.week?.days ?? [];
+  const metric = chartMetric;
+  const unit = metric === "msgs" ? "msgs" : "tokens";
+  if (column < CHART_DAYS) {
+    const d = days[column];
+    if (!d) return chartStatKey("", "--", row === CHART_ROWS - 1 ? "no data" : "", C.dim);
+    const max = Math.max(...days.map((x) => dayVal(x, metric)), 1);
+    return barCellKey(d, row, max, metric);
+  }
+  if (row === CHART_ROWS - 1) return backCellKey();
+  const vals = days.map((d) => dayVal(d, metric));
+  const total = vals.reduce((a, b) => a + b, 0);
+  if (row === 0) return chartStatKey("7-DAY TOTAL", fmtNum(total), unit);
+  if (row === 1) {
+    const peak = vals.length ? Math.max(...vals) : 0;
+    const on = days[vals.indexOf(peak)];
+    return chartStatKey("PEAK DAY", fmtNum(peak), on ? on.label.toLowerCase() : "", C.accentHi);
+  }
+  return chartStatKey("PER DAY", fmtNum(Math.round(total / (vals.length || 1))), "avg " + unit, C.text);
 }
 function renderAll(kinds) {
   for (const [context, v] of views) if (kinds.includes(v.kind)) render(context, v.kind);
@@ -4317,8 +4530,28 @@ function runCustom(command, context) {
   child.unref();
   showOk(context);
 }
-function onKeyDown(context, kind) {
+function onKeyDown(context, kind, device) {
   switch (kind) {
+    case "chart-open": {
+      if (!device) return showAlert(context);
+      const type = deviceTypes.get(device);
+      if (type != null && type !== DEVICE_XL) {
+        log(`chart: device type ${type} is not XL, no bundled profile to switch to`);
+        return showAlert(context);
+      }
+      if (Date.now() - lastWeekPoll > 15e3) pollWeek();
+      return switchProfile(device, CHART_PROFILE);
+    }
+    case "chart-cell": {
+      const c = views.get(context)?.coords ?? { column: 0, row: 0 };
+      if (c.column >= CHART_DAYS && c.row === CHART_ROWS - 1) return switchProfile(device, null);
+      if (c.column >= CHART_DAYS) {
+        pollWeek();
+        return showOk(context);
+      }
+      chartMetric = chartMetric === "tokens" ? "msgs" : "tokens";
+      return renderAll(["chart-cell", "chart-open"]);
+    }
     case "usage-session":
     case "usage-weekly":
       if (Date.now() - lastUsageAttempt > 3e4) pollUsage();
@@ -4389,11 +4622,39 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
+    const t0 = Date.now();
+    await pollWeek();
+    log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);
+    for (const d of state.week?.days ?? []) {
+      const max = Math.max(...state.week.days.map((x) => x.tokens), 1);
+      const bar = "#".repeat(Math.round(28 * (d.tokens / max)));
+      log(`  ${d.day} ${d.label}${d.isToday ? "*" : " "} ${String(fmtNum(d.tokens)).padStart(6)} tok ${String(d.msgs).padStart(5)} msgs |${bar}`);
+    }
+    process.exit(0);
+  })();
+} else if (process.argv.includes("--preview")) {
+  (async () => {
+    await pollWeek();
+    chartMetric = argOf("--metric") ?? "tokens";
+    const body = (uri) => decodeURIComponent(uri.slice(uri.indexOf(",") + 1)).replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
+    const place = (uri, x, y) => `<svg x="${x}" y="${y}" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">${body(uri)}</svg>`;
+    const PITCH = KEY + 8;
+    let inner = "";
+    for (let col = 0; col < CHART_COLS; col++)
+      for (let row = 0; row < CHART_ROWS; row++)
+        inner += place(chartCell(col, row), col * PITCH, row * PITCH);
+    const openY = CHART_ROWS * PITCH + 24;
+    inner += place(chartOpenKey(state.week?.days ?? [], chartMetric), 0, openY);
+    const w = CHART_COLS * PITCH - 8, h = openY + KEY;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="#0b0a0e"/>${inner}<text x="${KEY + 20}" y="${openY + 42}" font-family="Segoe UI, sans-serif" font-size="20" fill="#9b96a8">launcher key (on the normal profile) \u2014 metric: ${chartMetric}</text></svg>`;
+    const out = argOf("--out") ?? path.join(process.cwd(), "chart-preview.svg");
+    fs.writeFileSync(out, svg);
+    log(`preview written: ${out}`);
     process.exit(0);
   })();
 } else {
   const port = argOf("-port");
-  const pluginUUID = argOf("-pluginUUID");
+  pluginUUID = argOf("-pluginUUID");
   const registerEvent = argOf("-registerEvent");
   log(`starting: port=${port} uuid=${pluginUUID}`);
   ws = new import_websocket.default(`ws://127.0.0.1:${port}`);
@@ -4419,10 +4680,19 @@ if (process.argv.includes("--selftest")) {
       return;
     }
     const { event, context, action } = msg;
-    if (event === "willAppear" && action) {
-      views.set(context, { kind: kindOf(action), settings: msg.payload?.settings ?? {} });
+    if (event === "deviceDidConnect") {
+      deviceTypes.set(msg.device, msg.deviceInfo?.type);
+    } else if (event === "willAppear" && action) {
+      const kind = kindOf(action);
+      views.set(context, {
+        kind,
+        settings: msg.payload?.settings ?? {},
+        coords: msg.payload?.coordinates ?? { column: 0, row: 0 },
+        device: msg.device
+      });
       setTitle(context);
-      render(context, kindOf(action));
+      if ((kind === "chart-cell" || kind === "chart-open") && Date.now() - lastWeekPoll > 15e3) pollWeek();
+      render(context, kind);
     } else if (event === "willDisappear") {
       views.delete(context);
       cycle.delete(context);
@@ -4438,7 +4708,7 @@ if (process.argv.includes("--selftest")) {
         send({ event: "sendToPropertyInspector", context, payload: { models: (state.usage?.models ?? []).map((m) => m.name) } });
       }
     } else if (event === "keyDown" && action) {
-      onKeyDown(context, kindOf(action));
+      onKeyDown(context, kindOf(action), msg.device ?? views.get(context)?.device);
     }
   });
   (function usageLoop() {
@@ -4451,6 +4721,9 @@ if (process.argv.includes("--selftest")) {
   setInterval(pollToday, 3e5);
   pollBurn();
   setInterval(pollBurn, 6e4);
+  setInterval(() => {
+    if ([...views.values()].some((v) => v.kind === "chart-cell" || v.kind === "chart-open")) pollWeek();
+  }, 3e5);
   setInterval(() => {
     animPhase = (animPhase + 1) % 3;
     const kinds = [];

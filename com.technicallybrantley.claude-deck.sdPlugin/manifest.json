@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Claude Deck",
-  "Version": "1.0.1.0",
+  "Version": "1.1.0.0",
   "Author": "Brantley",
   "Description": "Live Claude usage limits, running Claude Code sessions, and quick-launch keys for Claude Desktop.",
   "UUID": "com.technicallybrantley.claude-deck",
@@ -148,6 +148,27 @@
       "States": [{ "Image": "imgs/prompt", "ShowTitle": false }]
     },
     {
+      "UUID": "com.technicallybrantley.claude-deck.chart-open",
+      "Name": "7-Day Chart",
+      "Tooltip": "Press to turn the whole deck into a 7-day usage block chart. Stream Deck XL only.",
+      "Icon": "imgs/chart7",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/chart7", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.technicallybrantley.claude-deck.chart-cell",
+      "Name": "7-Day Chart Cell",
+      "Tooltip": "One key of the 7-day chart. Placed automatically by the bundled profile.",
+      "Icon": "imgs/chart7",
+      "Controllers": ["Keypad"],
+      "VisibleInActionsList": false,
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/chart7", "ShowTitle": false }]
+    },
+    {
       "UUID": "com.technicallybrantley.claude-deck.custom",
       "Name": "Claude Custom",
       "Tooltip": "A Claude-styled key that opens anything you choose: app, URL, or folder.",
@@ -156,6 +177,14 @@
       "Controllers": ["Keypad"],
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/custom", "ShowTitle": false }]
+    }
+  ],
+  "Profiles": [
+    {
+      "Name": "Claude 7-Day Chart",
+      "DeviceType": 2,
+      "Readonly": true,
+      "DontAutoSwitchWhenInstalled": true
     }
   ]
 }

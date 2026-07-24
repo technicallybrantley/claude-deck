@@ -13,6 +13,9 @@ rediscover" doc. Keep it updated when you learn something the hard way.
 - `com.technicallybrantley.claude-deck.sdPlugin/manifest.json` — action
   definitions Stream Deck reads. Bump `"Version"` (4-part, e.g. `1.0.1.0`)
   on any behavior change so old cached state doesn't get confused with new.
+- `tools/make-chart-profile.mjs` — generates `Claude 7-Day Chart.streamDeckProfile`
+  inside the sdPlugin folder. Runs as part of `npm run build`; see the profile
+  section below before touching it.
 - `deploy.ps1` — stops Stream Deck, replaces the installed plugin folder
   with a fresh copy of `com.technicallybrantley.claude-deck.sdPlugin/`,
   restarts it. This is Windows-only (PowerShell) — use the `PowerShell`
@@ -66,7 +69,60 @@ the existing event in place rather than pushing a new one).
 
 If you write a new feature that reads these transcripts, assume every
 `type: "assistant"` line needs this same dedup — it is not specific to
-today/burn, it's a property of the log format.
+today/burn, it's a property of the log format. `pollWeek()` (the 7-day chart)
+is the third place doing it; its per-day bucketing keys the max by
+`message.id` *and* the day the id first appeared, so a request never lands in
+two columns. Good cross-check when changing any of this: the chart's "today"
+column and the Today key are computed independently and must agree exactly.
+
+## The whole-deck 7-day chart (profile takeover)
+
+A plugin can only draw on keys where its own actions sit, so "take over the deck"
+means switching to a profile bundled in the `.sdPlugin` folder. What cost time to
+work out:
+
+- **`switchToProfile`'s `context` is the *plugin* UUID** (the `-pluginUUID` argv
+  value), not the pressed key's context. Passing the key context silently does
+  nothing. That's why `pluginUUID` is module-level state now.
+- **Omitting `profile` from the payload is the back button.** Stream Deck returns
+  to the previously selected profile on its own, so the plugin doesn't have to
+  record where the user came from — and it restores the *page*, not just the profile.
+- **Bundled profiles install lazily.** Nothing appears in `ProfilesV3` when the
+  plugin loads; Stream Deck imports it the first time the profile is needed, and
+  logs `ESDProfileOperationImportFromPlugin::importProfile Profile <name> installed`
+  to `%APPDATA%\Elgato\StreamDeck\logs\StreamDeck.log`. If a switch seems to do
+  nothing, grep that log before suspecting the profile file.
+- **Ignore the `Failed to find last selected page ... for umbrella ...` warning**
+  that import emits. Stream Deck rewrites every GUID in the profile as it
+  imports, and warns while looking up the pre-rewrite page id. Verified after the
+  fact: the installed copy under `ProfilesV3` had `Pages.Current` pointing at the
+  32-key page, not the blank default. Check the installed copy before "fixing" it.
+- **Stream Deck clones the profile per physical device and re-stamps
+  `Device.Model` itself.** The generator hardcodes the XL model `20GAT9901`, but
+  an XL with a different model id gets its own copy — verified against
+  `WinToolsXL`, which is installed twice here, once per XL. Don't add per-device
+  logic; `DeviceType` in the manifest is what actually does the matching.
+- **A profile is tied to one `DeviceType`** (2 = XL). Supporting a 15-key deck
+  means a second profile *and* a second layout — the chart geometry assumes 8x4.
+  `chart-open` checks the device type from `deviceDidConnect` and shows an alert
+  rather than switching to a profile that doesn't exist.
+- **`VisibleInActionsList: false`** keeps `chart-cell` out of the user's action
+  list. It's a real manifest property (Elgato's own volume-controller uses it for
+  exactly this); it is not in every version of the published schema.
+- The bundled profile is **32 identical `chart-cell` instances with empty
+  Settings**. Each key works out what to draw from `payload.coordinates` at
+  `willAppear`. Don't bake positions into the profile — it makes the generator
+  and the renderer two places to keep in sync instead of one.
+- Cells are drawn in **whole-column coordinates** (144x576) and each key renders
+  the entire column translated by `-row*144`, letting the viewBox clip. That's
+  what makes a bar continuous across four keys instead of four stair steps.
+- The generator writes a **stored (uncompressed) zip with fixed timestamps and
+  fixed GUIDs**, so rebuilding is byte-identical unless the layout changed, and a
+  regenerated profile updates the installed one instead of appearing twice.
+
+`npm run preview -- --out chart.svg [--metric msgs]` renders all 32 keys to a
+single SVG using real data — the fast way to check layout changes without a deck.
+Rasterize with `chrome --headless --screenshot=out.png --window-size=1208,620 file:///...`.
 
 ## Usage-limit gauges vs. local transcript data — two different sources
 

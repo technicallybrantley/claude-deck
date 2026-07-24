@@ -41,6 +41,7 @@ const C = {
   text: "#f5f1ea",
   dim: "#9b96a8",
   accent: "#d97757", // Claude orange
+  accentHi: "#f0a184", // lighter accent — marks "today" in the 7-day chart
   ok: "#4ade80",
   warn: "#fbbf24",
   bad: "#f87171",
@@ -65,8 +66,11 @@ try {
   WATERMARK = sparkAt(72, 76, C.accent, 0.08, 2.4);
 }
 
-function svgWrap(inner) {
-  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" rx="18" fill="${C.bg}"/>${WATERMARK}${inner}</svg>`;
+// mark=false for the chart cells — 28 watermarks tiled across the deck is noise,
+// and anything drawn outside the 144x144 viewBox is clipped, which is what lets a
+// bar be drawn in whole-column coordinates and sliced by each key.
+function svgWrap(inner, mark = true) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="144" height="144" viewBox="0 0 144 144"><rect width="144" height="144" rx="18" fill="${C.bg}"/>${mark ? WATERMARK : ""}${inner}</svg>`;
   return "data:image/svg+xml," + encodeURIComponent(svg);
 }
 
@@ -140,6 +144,74 @@ function labelKey(title, label, sub, accent = C.accent) {
     <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
 
+// ---------- 7-day block chart (takes over a whole Stream Deck XL) ----------
+// Geometry is in whole-column pixels: the deck is 8x4 keys of 144px, so a day
+// column is one 144x576 canvas that gets sliced into four key images. Each key
+// draws the entire column translated by -row*144 and lets the viewBox clip.
+const CHART_COLS = 8, CHART_ROWS = 4, KEY = 144;
+const CHART_DAYS = 7;            // columns 0..6 are days, column 7 is the side panel
+const LABEL_H = 40;              // bottom strip of the last row: weekday + value
+const AXIS_Y = CHART_ROWS * KEY - LABEL_H;   // 536 — baseline of every bar
+const BLOCK_H = 20, BLOCK_GAP = 4, BLOCKS = 21;  // 21 blocks ≈ 500px of stack
+
+const dayVal = (d, metric) => (metric === "msgs" ? d?.msgs : d?.tokens) ?? 0;
+
+function barCellKey(d, row, max, metric) {
+  const v = dayVal(d, metric);
+  const frac = max > 0 ? Math.min(1, v / max) : 0;
+  const filled = frac * BLOCKS;
+  const full = Math.floor(filled);
+  const part = filled - full;
+  const col = d.isToday ? C.accentHi : C.accent;
+  let out = "";
+  for (let i = 0; i < BLOCKS; i++) {
+    const y = AXIS_Y - i * (BLOCK_H + BLOCK_GAP) - BLOCK_H - row * KEY;
+    if (y > KEY || y + BLOCK_H < 0) continue; // this block isn't on this key
+    let fill = C.track, op = 0.32;
+    if (i < full) { fill = col; op = 1; }
+    else if (i === full && part > 0.03) { fill = col; op = 0.45 + 0.55 * part; }
+    out += `<rect x="26" y="${y}" width="92" height="${BLOCK_H}" rx="5" fill="${fill}" opacity="${op}"/>`;
+  }
+  if (row === CHART_ROWS - 1) {
+    const a = AXIS_Y - row * KEY;
+    out += `<rect x="14" y="${a}" width="116" height="2" rx="1" fill="${d.isToday ? col : C.track}"/>
+      <text x="72" y="${a + 20}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="600" letter-spacing="0.5" fill="${d.isToday ? col : C.dim}">${esc(d.label)}</text>
+      <text x="72" y="${a + 37}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="${C.text}">${fmtNum(v)}</text>`;
+  }
+  return svgWrap(out, false);
+}
+
+function chartStatKey(title, value, sub, color = C.accent) {
+  return svgWrap(`
+    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
+    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="36" font-weight="700" fill="${color}">${esc(value)}</text>
+    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`, false);
+}
+
+function backCellKey() {
+  return svgWrap(`
+    <path d="M86 34 L54 68 L86 102" fill="none" stroke="${C.accent}" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" letter-spacing="1" fill="${C.text}">BACK</text>`, false);
+}
+
+// The launcher key on the normal profile: a miniature of the same chart
+function chartOpenKey(days, metric) {
+  const vals = days.map((d) => dayVal(d, metric));
+  const max = Math.max(...vals, 1);
+  const bars = days.length
+    ? days.map((d, i) => {
+        const h = Math.max(4, Math.round(62 * (dayVal(d, metric) / max)));
+        return `<rect x="${13 + i * 17}" y="${102 - h}" width="13" height="${h}" rx="3" fill="${d.isToday ? C.accentHi : C.accent}" opacity="${d.isToday ? 1 : 0.75}"/>`;
+      }).join("")
+    : `<text x="72" y="84" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" fill="${C.dim}">--</text>`;
+  const total = vals.reduce((a, b) => a + b, 0);
+  return svgWrap(`
+    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">7 DAYS</text>
+    ${bars}
+    <rect x="13" y="103" width="119" height="2" rx="1" fill="${C.track}"/>
+    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="700" fill="${C.text}">${fmtNum(total)}${metric === "msgs" ? " msgs" : " tok"}</text>`);
+}
+
 // ---------- formatting ----------
 function fmtReset(iso) {
   if (!iso) return "";
@@ -169,6 +241,7 @@ const state = {
   usageAt: 0,
   sessions: [],
   today: null,
+  week: null,         // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
   loggedRaw: false,
@@ -368,6 +441,111 @@ async function pollToday() {
   }
 }
 
+// ---------- data: last 7 days (local JSONL, per-file cache) ----------
+const weekCache = new Map(); // path -> { size, from, days: { day: {tokens, msgs} } }
+let lastWeekPoll = 0;
+let chartMetric = "tokens";  // toggled by pressing any bar column in the chart profile
+
+const DOW = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+
+// Step a real Date rather than subtracting 864e5 — a DST boundary inside the
+// window would otherwise skew every day key past it by an hour.
+function weekDayKeys() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() - (CHART_DAYS - 1));
+  const out = [];
+  for (let i = 0; i < CHART_DAYS; i++) {
+    out.push({ day: localDay(d.getTime()), label: DOW[d.getDay()] });
+    d.setDate(d.getDate() + 1);
+  }
+  return out;
+}
+
+// Same dedup rule as pollToday: one streamed response writes a line per content
+// block and every line repeats that request's cumulative usage, so count each
+// message id once (max, since a later snapshot can carry the final totals).
+async function scanWeekFile(fp, wanted) {
+  const out = {};
+  const bucket = (day) => (out[day] ??= { tokens: 0, msgs: 0 });
+  let text;
+  try { text = await fsp.readFile(fp, "utf8"); } catch { return out; }
+  const reqs = new Map();   // message id -> { day, tok }
+  const seenMsg = new Set();
+  for (const line of text.split("\n")) {
+    if (!line) continue;
+    let j;
+    try { j = JSON.parse(line); } catch { continue; }
+    if (!j.timestamp) continue;
+    const day = localDay(j.timestamp);
+    if (!wanted.has(day)) continue;
+    const mid = j.message?.id ?? j.requestId;
+    if (j.type === "user") bucket(day).msgs++;
+    else if (j.type === "assistant" && (!mid || !seenMsg.has(mid))) {
+      if (mid) seenMsg.add(mid);
+      bucket(day).msgs++;
+    }
+    const u = j.message?.usage;
+    if (!u) continue;
+    const tok = (u.input_tokens ?? 0) + (u.output_tokens ?? 0) + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+    if (!mid) { bucket(day).tokens += tok; continue; }
+    const r = reqs.get(mid);
+    if (r) r.tok = Math.max(r.tok, tok);
+    else reqs.set(mid, { day, tok });
+  }
+  for (const r of reqs.values()) bucket(r.day).tokens += r.tok;
+  return out;
+}
+
+async function pollWeek() {
+  lastWeekPoll = Date.now();
+  try {
+    const keys = weekDayKeys();
+    const from = keys[0].day;
+    const wanted = new Set(keys.map((k) => k.day));
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    start.setDate(start.getDate() - (CHART_DAYS - 1));
+    const startMs = start.getTime();
+    const totals = new Map(keys.map((k) => [k.day, { tokens: 0, msgs: 0 }]));
+    const dirs = await fsp.readdir(PROJECTS_DIR).catch(() => []);
+    for (const dname of dirs) {
+      const dir = path.join(PROJECTS_DIR, dname);
+      let files;
+      try { files = await fsp.readdir(dir); } catch { continue; }
+      for (const f of files) {
+        if (!f.endsWith(".jsonl")) continue;
+        const fp = path.join(dir, f);
+        let st;
+        try { st = await fsp.stat(fp); } catch { continue; }
+        if (st.mtimeMs < startMs) continue; // nothing written inside the window
+        let c = weekCache.get(fp);
+        // `from` is part of the key so the whole cache invalidates at midnight
+        if (!c || c.size !== st.size || c.from !== from) {
+          c = { size: st.size, from, days: await scanWeekFile(fp, wanted) };
+          weekCache.set(fp, c);
+        }
+        for (const [day, b] of Object.entries(c.days)) {
+          const t = totals.get(day);
+          if (!t) continue;
+          t.tokens += b.tokens; t.msgs += b.msgs;
+        }
+      }
+    }
+    for (const fp of weekCache.keys()) {
+      if (weekCache.get(fp).from !== from) weekCache.delete(fp);
+    }
+    const today = localDay(Date.now());
+    state.week = {
+      days: keys.map((k) => ({ ...k, ...totals.get(k.day), isToday: k.day === today })),
+      at: Date.now(),
+    };
+    renderAll(["chart-cell", "chart-open"]);
+  } catch (e) {
+    log("week poll failed:", String(e));
+  }
+}
+
 // ---------- data: burn rate (incremental tail of recent transcripts) ----------
 const hourTracker = new Map(); // file -> { offset, rest, events: [{t, tok}] }
 
@@ -453,11 +631,20 @@ function argOf(name) {
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
 
-const views = new Map(); // context -> { kind, settings }
+const views = new Map(); // context -> { kind, settings, coords, device }
 const cycle = new Map(); // context -> { idx, timer }
 const focusIdx = new Map(); // context -> session index
+const deviceTypes = new Map(); // device id -> Stream Deck device type
 let ws = null;
 let animPhase = 0;
+let pluginUUID = null;
+
+// The 7-day chart takes over the deck by switching to a profile bundled in the
+// .sdPlugin folder (manifest "Profiles"). Name must match both the manifest
+// entry and the .streamDeckProfile filename. XL only — a profile is tied to one
+// DeviceType, and the deck has to be 8x4 for the layout to mean anything.
+const CHART_PROFILE = "Claude 7-Day Chart";
+const DEVICE_XL = 2;
 
 function send(obj) {
   if (ws && ws.readyState === 1) ws.send(JSON.stringify(obj));
@@ -466,6 +653,11 @@ const setImage = (context, image) => send({ event: "setImage", context, payload:
 const setTitle = (context) => send({ event: "setTitle", context, payload: { title: "", target: 0 } });
 const showOk = (context) => send({ event: "showOk", context });
 const showAlert = (context) => send({ event: "showAlert", context });
+// context here is the *plugin* uuid, not the key's. Omitting `profile` is the
+// documented way to return to whatever profile was showing before the switch —
+// that's the whole back button, no bookkeeping needed on our side.
+const switchProfile = (device, profile) =>
+  send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
 
 const kindOf = (action) => action.replace("com.technicallybrantley.claude-deck.", "");
 
@@ -528,6 +720,12 @@ function render(context, kind) {
       const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
       return setImage(context, bigCountKey("CLAUDE CODE", n, busy > 0 ? `${busy} working` : n > 0 ? "all idle" : "none running", busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null));
     }
+    case "chart-open":
+      return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
+    case "chart-cell": {
+      const c = views.get(context)?.coords ?? { column: 0, row: 0 };
+      return setImage(context, chartCell(c.column, c.row));
+    }
     case "today": {
       const t = state.today;
       return setImage(context, linesKey("TODAY", [
@@ -537,6 +735,30 @@ function render(context, kind) {
       ]));
     }
   }
+}
+
+// One key of the takeover profile. Position comes from the key's coordinates, so
+// the bundled profile is 32 identical action instances with no baked-in settings.
+function chartCell(column, row) {
+  const days = state.week?.days ?? [];
+  const metric = chartMetric;
+  const unit = metric === "msgs" ? "msgs" : "tokens";
+  if (column < CHART_DAYS) {
+    const d = days[column];
+    if (!d) return chartStatKey("", "--", row === CHART_ROWS - 1 ? "no data" : "", C.dim);
+    const max = Math.max(...days.map((x) => dayVal(x, metric)), 1);
+    return barCellKey(d, row, max, metric);
+  }
+  if (row === CHART_ROWS - 1) return backCellKey();
+  const vals = days.map((d) => dayVal(d, metric));
+  const total = vals.reduce((a, b) => a + b, 0);
+  if (row === 0) return chartStatKey("7-DAY TOTAL", fmtNum(total), unit);
+  if (row === 1) {
+    const peak = vals.length ? Math.max(...vals) : 0;
+    const on = days[vals.indexOf(peak)];
+    return chartStatKey("PEAK DAY", fmtNum(peak), on ? on.label.toLowerCase() : "", C.accentHi);
+  }
+  return chartStatKey("PER DAY", fmtNum(Math.round(total / (vals.length || 1))), "avg " + unit, C.text);
 }
 
 function renderAll(kinds) {
@@ -625,8 +847,28 @@ function runCustom(command, context) {
   showOk(context);
 }
 
-function onKeyDown(context, kind) {
+function onKeyDown(context, kind, device) {
   switch (kind) {
+    case "chart-open": {
+      if (!device) return showAlert(context);
+      const type = deviceTypes.get(device);
+      if (type != null && type !== DEVICE_XL) {
+        log(`chart: device type ${type} is not XL, no bundled profile to switch to`);
+        return showAlert(context);
+      }
+      if (Date.now() - lastWeekPoll > 15_000) pollWeek();
+      return switchProfile(device, CHART_PROFILE);
+    }
+    case "chart-cell": {
+      const c = views.get(context)?.coords ?? { column: 0, row: 0 };
+      if (c.column >= CHART_DAYS && c.row === CHART_ROWS - 1) return switchProfile(device, null);
+      if (c.column >= CHART_DAYS) {           // side panel: force a re-read
+        pollWeek();
+        return showOk(context);
+      }
+      chartMetric = chartMetric === "tokens" ? "msgs" : "tokens";
+      return renderAll(["chart-cell", "chart-open"]);
+    }
     case "usage-session":
     case "usage-weekly":
       if (Date.now() - lastUsageAttempt > 30_000) pollUsage();
@@ -692,11 +934,42 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
+    const t0 = Date.now();
+    await pollWeek();
+    log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);
+    for (const d of state.week?.days ?? []) {
+      const max = Math.max(...state.week.days.map((x) => x.tokens), 1);
+      const bar = "#".repeat(Math.round(28 * (d.tokens / max)));
+      log(`  ${d.day} ${d.label}${d.isToday ? "*" : " "} ${String(fmtNum(d.tokens)).padStart(6)} tok ${String(d.msgs).padStart(5)} msgs |${bar}`);
+    }
+    process.exit(0);
+  })();
+} else if (process.argv.includes("--preview")) {
+  // Renders the whole chart profile to one SVG so the layout can be checked
+  // without a physical deck: `npm run preview -- --out chart.svg [--metric msgs]`
+  (async () => {
+    await pollWeek();
+    chartMetric = argOf("--metric") ?? "tokens";
+    const body = (uri) => decodeURIComponent(uri.slice(uri.indexOf(",") + 1))
+      .replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
+    const place = (uri, x, y) => `<svg x="${x}" y="${y}" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">${body(uri)}</svg>`;
+    const PITCH = KEY + 8; // fake the physical gap between keys
+    let inner = "";
+    for (let col = 0; col < CHART_COLS; col++)
+      for (let row = 0; row < CHART_ROWS; row++)
+        inner += place(chartCell(col, row), col * PITCH, row * PITCH);
+    const openY = CHART_ROWS * PITCH + 24;
+    inner += place(chartOpenKey(state.week?.days ?? [], chartMetric), 0, openY);
+    const w = CHART_COLS * PITCH - 8, h = openY + KEY;
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><rect width="${w}" height="${h}" fill="#0b0a0e"/>${inner}<text x="${KEY + 20}" y="${openY + 42}" font-family="Segoe UI, sans-serif" font-size="20" fill="#9b96a8">launcher key (on the normal profile) — metric: ${chartMetric}</text></svg>`;
+    const out = argOf("--out") ?? path.join(process.cwd(), "chart-preview.svg");
+    fs.writeFileSync(out, svg);
+    log(`preview written: ${out}`);
     process.exit(0);
   })();
 } else {
   const port = argOf("-port");
-  const pluginUUID = argOf("-pluginUUID");
+  pluginUUID = argOf("-pluginUUID");
   const registerEvent = argOf("-registerEvent");
   log(`starting: port=${port} uuid=${pluginUUID}`);
 
@@ -714,10 +987,20 @@ if (process.argv.includes("--selftest")) {
     let msg;
     try { msg = JSON.parse(data.toString()); } catch { return; }
     const { event, context, action } = msg;
-    if (event === "willAppear" && action) {
-      views.set(context, { kind: kindOf(action), settings: msg.payload?.settings ?? {} });
+    if (event === "deviceDidConnect") {
+      deviceTypes.set(msg.device, msg.deviceInfo?.type);
+    } else if (event === "willAppear" && action) {
+      const kind = kindOf(action);
+      views.set(context, {
+        kind,
+        settings: msg.payload?.settings ?? {},
+        coords: msg.payload?.coordinates ?? { column: 0, row: 0 },
+        device: msg.device,
+      });
       setTitle(context);
-      render(context, kindOf(action));
+      // The chart profile appearing is the signal that the user just opened it
+      if ((kind === "chart-cell" || kind === "chart-open") && Date.now() - lastWeekPoll > 15_000) pollWeek();
+      render(context, kind);
     } else if (event === "willDisappear") {
       views.delete(context);
       cycle.delete(context);
@@ -730,7 +1013,7 @@ if (process.argv.includes("--selftest")) {
         send({ event: "sendToPropertyInspector", context, payload: { models: (state.usage?.models ?? []).map((m) => m.name) } });
       }
     } else if (event === "keyDown" && action) {
-      onKeyDown(context, kindOf(action));
+      onKeyDown(context, kindOf(action), msg.device ?? views.get(context)?.device);
     }
   });
 
@@ -739,6 +1022,11 @@ if (process.argv.includes("--selftest")) {
   setInterval(pollToday, 300_000);
   pollBurn();
   setInterval(pollBurn, 60_000);
+  // The 7-day scan is the most expensive poll (whole transcripts, not a tail),
+  // so it only runs while a key that shows it is actually on screen.
+  setInterval(() => {
+    if ([...views.values()].some((v) => v.kind === "chart-cell" || v.kind === "chart-open")) pollWeek();
+  }, 300_000);
   // Animation ticker: busy-session dots + red pulse on gauges at 90%+
   setInterval(() => {
     animPhase = (animPhase + 1) % 3;
