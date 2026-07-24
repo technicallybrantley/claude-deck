@@ -13,7 +13,7 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Session 5h** | Live 5-hour limit % ring + reset countdown. Press to refresh. |
 | **Weekly** | Weekly limit % ring + per-model weekly % underneath. |
 | **Today** | Today's Claude Code activity: chats, messages, tokens. |
-| **Sessions** | Count of running Claude Code sessions and how many are busy (5s refresh). Press to cycle per-session details. |
+| **Sessions** | Count of running Claude Code sessions and how many are busy (5s refresh). Press to cycle per-session details. Background Agent SDK sessions aren't windows you can switch to, so they're reported separately as `+N sdk` rather than counted. |
 | **Launch Claude Desktop** | Opens the Claude Desktop app (Microsoft Store install auto-detected). |
 | **Quick Chat** | Fires Claude's global quick-chat hotkey (Ctrl+Alt+Space). |
 | **Open claude.ai** | New chat in your browser. |

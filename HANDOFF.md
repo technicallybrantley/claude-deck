@@ -60,6 +60,27 @@ and take the **max** usage per id, never the sum.
 Cross-check when changing any of this: the chart's "today" column and the Today
 key are computed independently and must agree exactly.
 
+## Not every `~/.claude/sessions/*.json` is a session the user can see
+
+`pidAlive()` is necessary but not sufficient. Each file carries an
+`entrypoint` naming who started it:
+
+- `cli` — a terminal the user opened. Has `status` / `updatedAt`.
+- `claude-desktop` — launched from the desktop app. No `status`.
+- `sdk-ts` (and siblings) — spawned programmatically by an Agent SDK harness.
+  No `status`, no window, and one node orchestrator can hold a dozen at once.
+
+All of them are live processes, so a naive count reads far higher than what the
+user sees — 17 vs ~6 here, because 8 were SDK agents under three node parents.
+`pollSessions()` deny-lists `entrypoint.startsWith("sdk")` (deny-list, so an
+unfamiliar user-facing entrypoint still counts) and reports those separately as
+`state.agents`. `kind` is *not* the discriminator — it's `"interactive"` on SDK
+sessions too.
+
+Unrelated red herring while diagnosing this: many of those processes run from a
+binary named `claude.exe.old.<timestamp>`, which is just Claude Code having
+self-updated underneath them. It says nothing about session validity.
+
 ## The whole-deck 7-day chart (profile takeover)
 
 A plugin can only draw on keys holding its own actions, so taking over the deck

@@ -3802,13 +3802,13 @@ function linesKey(title, rows, accent = C.accent) {
     <text x="14" y="24" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
     ${rowSvg}`);
 }
-function bigCountKey(title, count, sub, subColor, animPhase2 = null) {
+function bigCountKey(title, count, sub, subColor, animPhase2 = null, subSize = 17) {
   const dots = animPhase2 == null ? "" : [0, 1, 2].map((i) => `<circle cx="122" cy="${56 + i * 16}" r="${i === animPhase2 ? 4.5 : 3}" fill="${i === animPhase2 ? C.ok : C.track}"/>`).join("");
   return svgWrap(`
     <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
     ${dots}
     <text x="72" y="96" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="64" font-weight="700" fill="${count > 0 ? C.text : C.dim}">${count}</text>
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="${subSize}" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
 }
 function burnKey(tokensHour, sub) {
   const has = tokensHour != null;
@@ -3928,6 +3928,8 @@ var state = {
   usageErr: null,
   usageAt: 0,
   sessions: [],
+  agents: 0,
+  // live SDK-spawned sessions — counted, but not shown as sessions
   today: null,
   week: null,
   // { days: [{ day, label, tokens, msgs, isToday }], at }
@@ -4039,21 +4041,26 @@ function pidAlive(pid) {
     return false;
   }
 }
+var isAgentSession = (s) => typeof s.entrypoint === "string" && s.entrypoint.startsWith("sdk");
 async function pollSessions() {
   try {
     const files = await fsp.readdir(SESSIONS_DIR).catch(() => []);
     const out = [];
+    let agents = 0;
     for (const f of files) {
       if (!f.endsWith(".json")) continue;
       try {
         const s = JSON.parse(await fsp.readFile(path.join(SESSIONS_DIR, f), "utf8"));
-        if (s.pid && pidAlive(s.pid)) out.push(s);
+        if (!s.pid || !pidAlive(s.pid)) continue;
+        if (isAgentSession(s)) agents++;
+        else out.push(s);
       } catch {
       }
     }
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    const changed = JSON.stringify(out.map((s) => [s.pid, s.status])) !== JSON.stringify(state.sessions.map((s) => [s.pid, s.status]));
+    const changed = agents !== state.agents || JSON.stringify(out.map((s) => [s.pid, s.status])) !== JSON.stringify(state.sessions.map((s) => [s.pid, s.status]));
     state.sessions = out;
+    state.agents = agents;
     if (changed) renderAll(["sessions", "focus-session"]);
   } catch (e) {
     log("sessions poll failed:", String(e));
@@ -4416,7 +4423,9 @@ function render(context, kind) {
         ]));
       }
       const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
-      return setImage(context, bigCountKey("CLAUDE CODE", n, busy > 0 ? `${busy} working` : n > 0 ? "all idle" : "none running", busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null));
+      const a = state.agents;
+      const sub = n === 0 ? a > 0 ? `${a} sdk only` : "none running" : (busy > 0 ? `${busy} working` : "all idle") + (a > 0 ? ` +${a} sdk` : "");
+      return setImage(context, bigCountKey("CLAUDE CODE", n, sub, busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null, a > 0 ? 15 : 17));
     }
     case "chart-open":
       return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
@@ -4617,7 +4626,10 @@ if (process.argv.includes("--selftest")) {
     await pollUsage();
     log("selftest usage:", state.usage ? JSON.stringify(state.usage) : `ERROR: ${state.usageErr}`);
     await pollSessions();
-    log("selftest sessions:", state.sessions.map((s) => `${s.name}[${s.status}]`).join(", ") || "(none)");
+    log(
+      `selftest sessions (${state.sessions.length} shown, ${state.agents} sdk agents hidden):`,
+      state.sessions.map((s) => `${s.name}[${s.status}]`).join(", ") || "(none)"
+    );
     await pollToday();
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();

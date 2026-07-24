@@ -103,7 +103,7 @@ function linesKey(title, rows, accent = C.accent) {
     ${rowSvg}`);
 }
 
-function bigCountKey(title, count, sub, subColor, animPhase = null) {
+function bigCountKey(title, count, sub, subColor, animPhase = null, subSize = 17) {
   // animPhase non-null → cycling activity dots beside the count (frame-pushed animation)
   const dots = animPhase == null ? "" : [0, 1, 2]
     .map((i) => `<circle cx="122" cy="${56 + i * 16}" r="${i === animPhase ? 4.5 : 3}" fill="${i === animPhase ? C.ok : C.track}"/>`)
@@ -112,7 +112,7 @@ function bigCountKey(title, count, sub, subColor, animPhase = null) {
     <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
     ${dots}
     <text x="72" y="96" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="64" font-weight="700" fill="${count > 0 ? C.text : C.dim}">${count}</text>
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="${subSize}" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
 }
 
 function burnKey(tokensHour, sub) {
@@ -240,6 +240,7 @@ const state = {
   usageErr: null,
   usageAt: 0,
   sessions: [],
+  agents: 0,          // live SDK-spawned sessions — counted, but not shown as sessions
   today: null,
   week: null,         // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
@@ -352,20 +353,33 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch { return false; }
 }
 
+// `entrypoint` says who started a session: "cli" is a terminal the user opened,
+// "claude-desktop" is one launched from the app, "sdk-*" is spawned
+// programmatically by an Agent SDK harness. SDK sessions are live processes with
+// no window and no status, and one orchestrator can hold a dozen — counting them
+// makes the key read wildly higher than what the user can see. Deny-list rather
+// than allow-list so an unfamiliar user-facing entrypoint still counts.
+const isAgentSession = (s) => typeof s.entrypoint === "string" && s.entrypoint.startsWith("sdk");
+
 async function pollSessions() {
   try {
     const files = await fsp.readdir(SESSIONS_DIR).catch(() => []);
     const out = [];
+    let agents = 0;
     for (const f of files) {
       if (!f.endsWith(".json")) continue;
       try {
         const s = JSON.parse(await fsp.readFile(path.join(SESSIONS_DIR, f), "utf8"));
-        if (s.pid && pidAlive(s.pid)) out.push(s);
+        if (!s.pid || !pidAlive(s.pid)) continue;
+        if (isAgentSession(s)) agents++;
+        else out.push(s);
       } catch {}
     }
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
-    const changed = JSON.stringify(out.map((s) => [s.pid, s.status])) !== JSON.stringify(state.sessions.map((s) => [s.pid, s.status]));
+    const changed = agents !== state.agents ||
+      JSON.stringify(out.map((s) => [s.pid, s.status])) !== JSON.stringify(state.sessions.map((s) => [s.pid, s.status]));
     state.sessions = out;
+    state.agents = agents;
     if (changed) renderAll(["sessions", "focus-session"]);
   } catch (e) {
     log("sessions poll failed:", String(e));
@@ -718,7 +732,13 @@ function render(context, kind) {
         ]));
       }
       const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
-      return setImage(context, bigCountKey("CLAUDE CODE", n, busy > 0 ? `${busy} working` : n > 0 ? "all idle" : "none running", busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null));
+      const a = state.agents;
+      // Background SDK agents are reported as "+N sdk" rather than folded into the
+      // count — they're real work, but they aren't windows you can switch to.
+      const sub = n === 0
+        ? (a > 0 ? `${a} sdk only` : "none running")
+        : (busy > 0 ? `${busy} working` : "all idle") + (a > 0 ? ` +${a} sdk` : "");
+      return setImage(context, bigCountKey("CLAUDE CODE", n, sub, busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null, a > 0 ? 15 : 17));
     }
     case "chart-open":
       return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
@@ -929,7 +949,8 @@ if (process.argv.includes("--selftest")) {
     await pollUsage();
     log("selftest usage:", state.usage ? JSON.stringify(state.usage) : `ERROR: ${state.usageErr}`);
     await pollSessions();
-    log("selftest sessions:", state.sessions.map((s) => `${s.name}[${s.status}]`).join(", ") || "(none)");
+    log(`selftest sessions (${state.sessions.length} shown, ${state.agents} sdk agents hidden):`,
+      state.sessions.map((s) => `${s.name}[${s.status}]`).join(", ") || "(none)");
     await pollToday();
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
