@@ -10,7 +10,7 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 
 | Key | What it shows / does |
 |---|---|
-| **Session 5h** | Live 5-hour limit % ring + reset countdown. At 100% it flips to a CRT-style countdown showing exactly when the window reopens. Press to refresh. |
+| **Session 5h** | Live 5-hour limit % ring + reset countdown. Press to refresh. |
 | **Weekly** | Weekly limit % ring + per-model weekly % underneath. |
 | **Today** | Today's Claude Code activity: chats, messages, tokens. |
 | **Sessions** | Count of running Claude Code sessions and how many are busy (5s refresh). Press to cycle per-session details. Background Agent SDK sessions aren't windows you can switch to, so they're reported separately as `+N sdk` rather than counted. |
@@ -33,6 +33,13 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
+
+**At 100% any limit gauge stops being a gauge** — a full bar tells you nothing
+you can act on — and becomes a CRT-style countdown to its reset: scanlines,
+pulsing frame, progress through the window, and the wall-clock time it reopens.
+Session caps count down in `h:mm:ss`; weekly and per-model caps can be days out,
+so they show `3d 04:30` instead of ticking seconds. It reverts to the normal
+gauge on its own once the window rolls over.
 
 ### The 7-day chart
 

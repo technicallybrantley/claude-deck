@@ -3796,24 +3796,28 @@ function gaugeKey(label, pct, sub, pulsePhase = null) {
     ${has ? `<rect x="14" y="90" width="${Math.max(8, 116 * p / 100)}" height="12" rx="6" fill="${col}"/>` : ""}
     <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
-function capKey(resetsAt, phase) {
+var CAP_5H = 5 * 36e5;
+var CAP_7D = 7 * 864e5;
+function capKey(label, resetsAt, windowMs, phase) {
   const now = Date.now();
   const ms = new Date(resetsAt).getTime() - now;
   const p2 = (n) => String(n).padStart(2, "0");
   const live = ms > 0;
+  const d = Math.floor(ms / 864e5);
+  const hOfDay = Math.floor(ms % 864e5 / 36e5);
   const h = Math.floor(ms / 36e5), m = Math.floor(ms % 36e5 / 6e4), s = Math.floor(ms % 6e4 / 1e3);
-  const clock = !live ? "--:--" : h > 0 ? `${h}:${p2(m)}:${p2(s)}` : `${p2(m)}:${p2(s)}`;
-  const size = live && h > 0 ? 31 : 44;
-  const done = live ? Math.max(0, Math.min(1, 1 - ms / (5 * 36e5))) : 1;
+  const clock = !live ? "--:--" : d >= 1 ? `${d}d ${p2(hOfDay)}:${p2(m)}` : h > 0 ? `${h}:${p2(m)}:${p2(s)}` : `${p2(m)}:${p2(s)}`;
+  const size = Math.min(46, Math.floor(124 / (clock.length * 0.55)));
+  const done = live ? Math.max(0, Math.min(1, 1 - ms / windowMs)) : 1;
   const segs = 11, lit = Math.round(segs * done);
   const bar = Array.from({ length: segs }, (_, i) => `<rect x="${13 + i * 11.6}" y="119" width="8" height="10" rx="2" fill="${i < lit ? C.accent : C.track}" opacity="${i < lit ? 1 : 0.35}"/>`).join("");
   let scan = "";
   for (let y = 10; y < 138; y += 6) scan += `<rect x="6" y="${y}" width="132" height="1" fill="${C.text}" opacity="0.045"/>`;
-  const at = live ? new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "any moment";
+  const at = !live ? "any moment" : ms >= 864e5 ? new Date(resetsAt).toLocaleString([], { weekday: "short", hour: "numeric" }).replace(",", "") : new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
   return svgWrap(`
     ${scan}
     <rect x="5" y="5" width="134" height="134" rx="12" fill="none" stroke="${C.bad}" stroke-width="3" opacity="${[0.35, 0.7, 1][phase % 3]}"/>
-    <text x="72" y="33" text-anchor="middle" font-family="${MONO}" font-size="15" font-weight="700" letter-spacing="1.5" fill="${C.bad}">SESSION CAP</text>
+    <text x="72" y="33" text-anchor="middle" font-family="${MONO}" font-size="15" font-weight="700" letter-spacing="1.5" fill="${C.bad}">${esc(label)}</text>
     <text x="72" y="83" text-anchor="middle" font-family="${MONO}" font-size="${size}" font-weight="700" fill="${C.accentHi}" xml:space="preserve">${clock}</text>
     <text x="72" y="107" text-anchor="middle" font-family="${MONO}" font-size="14" fill="${C.dim}">${live ? "resets " + esc(at) : "resetting"}</text>
     ${bar}`, false);
@@ -4682,12 +4686,13 @@ function render(context, kind) {
     case "usage-session": {
       if (state.usageErr && !state.usage) return setImage(context, gaugeKey("SESSION 5H", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.fiveHour;
-      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey(b.resetsAt, animPhase));
+      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey("SESSION CAP", b.resetsAt, CAP_5H, animPhase));
       return setImage(context, gaugeKey("SESSION 5H", b?.pct ?? null, b ? fmtReset(b.resetsAt) : "no data", b?.pct >= 90 ? animPhase : null));
     }
     case "usage-weekly": {
       if (state.usageErr && !state.usage) return setImage(context, gaugeKey("WEEKLY", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.weekly;
+      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey("WEEKLY CAP", b.resetsAt, CAP_7D, animPhase));
       const u = state.usage;
       const sub = u?.scopedPct != null && u.scopedName ? `${u.scopedName} ${Math.round(u.scopedPct)}%` : u?.weeklyOpus?.pct != null ? `opus ${Math.round(u.weeklyOpus.pct)}%` : b ? fmtReset(b.resetsAt) : "no data";
       return setImage(context, gaugeKey("WEEKLY", b?.pct ?? null, sub, b?.pct >= 90 ? animPhase : null));
@@ -4697,6 +4702,7 @@ function render(context, kind) {
       const want = views.get(context)?.settings?.model;
       const m = models.find((x) => x.name === want) ?? models[0];
       const name = (m?.name ?? want ?? "MODEL").toUpperCase().slice(0, 8);
+      if (m?.pct >= 100 && m.resetsAt) return setImage(context, capKey(`${name} CAP`, m.resetsAt, CAP_7D, animPhase));
       return setImage(context, gaugeKey(`${name} 7D`, m?.pct ?? null, m?.resetsAt ? fmtReset(m.resetsAt) : "no data", m?.pct >= 90 ? animPhase : null));
     }
     case "burn-rate":
@@ -5070,13 +5076,15 @@ if (process.argv.includes("--selftest")) {
     if (process.argv.includes("--cap")) {
       const now = Date.now();
       const cases = [
-        ["2h 41m left", now + (2 * 3600 + 41 * 60 + 7) * 1e3],
-        ["47m left", now + (47 * 60 + 12) * 1e3],
-        ["38s left", now + 38e3],
-        ["past reset", now - 5e3]
+        ["session 2h41m", "SESSION CAP", now + (2 * 3600 + 41 * 60 + 7) * 1e3, CAP_5H],
+        ["session 47m", "SESSION CAP", now + (47 * 60 + 12) * 1e3, CAP_5H],
+        ["session 38s", "SESSION CAP", now + 38e3, CAP_5H],
+        ["weekly 3d", "WEEKLY CAP", now + (3 * 86400 + 4 * 3600 + 31 * 60) * 1e3, CAP_7D],
+        ["model 19h", "FABLE CAP", now + (19 * 3600 + 5 * 60) * 1e3, CAP_7D],
+        ["past reset", "WEEKLY CAP", now - 5e3, CAP_7D]
       ];
-      cases.forEach(([lbl, at], i) => {
-        inner += place(capKey(new Date(at).toISOString(), i), i * PITCH, 40);
+      cases.forEach(([lbl, cap, at, win], i) => {
+        inner += place(capKey(cap, new Date(at).toISOString(), win, i), i * PITCH, 40);
         inner += label(i * PITCH, 28, lbl);
       });
       w = cases.length * PITCH;
