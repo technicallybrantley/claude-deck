@@ -8,8 +8,21 @@ $dst = Join-Path $env:APPDATA "Elgato\StreamDeck\Plugins\com.technicallybrantley
 
 Stop-Process -Name StreamDeck -Force -ErrorAction SilentlyContinue
 Start-Sleep -Seconds 2
+
+# usage-cache.json lives inside the installed folder, so a plain wipe-and-copy
+# throws away the last good usage reading — the very thing that exists so a
+# restart doesn't show empty gauges. If the first poll after the restart then
+# gets a 429 (easy to trigger by deploying a few times in a row), the gauges sit
+# on "--" for the whole backoff. Carry the cache across instead.
+$cache = Join-Path $dst "usage-cache.json"
+$saved = if (Test-Path $cache) { Get-Content $cache -Raw } else { $null }
+
 if (Test-Path $dst) { Remove-Item $dst -Recurse -Force }
 Copy-Item $src $dst -Recurse
+if ($saved) {
+    Set-Content -Path (Join-Path $dst "usage-cache.json") -Value $saved -NoNewline
+    Write-Host "preserved usage cache across deploy"
+}
 
 $logo = Join-Path $PSScriptRoot "local-assets\claude-logo.png"
 if (Test-Path $logo) {

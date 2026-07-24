@@ -30,7 +30,16 @@ npm run preview -- --out chart.svg [--metric msgs]   # renders all 32 chart keys
 
 Run `selftest` before deploying — it catches logic errors without a restart
 cycle. A 429 from the usage endpoint there is expected if you just hit it (the
-client backs off 240s), not a bug. Rasterize a preview with
+client backs off 240s), not a bug.
+
+That backoff has a sharp edge worth knowing: **blank usage gauges right after a
+deploy usually aren't a code bug.** `usage-cache.json` (the 30-minute warm-start
+reading) lives inside the installed folder, so a wipe-and-copy deploy used to
+delete it; if the first poll after the restart then 429'd, session/weekly/model
+sat on `--` for the whole backoff while the local keys kept working. `deploy.ps1`
+now carries that file across. Before debugging "the gauges broke", check
+`claude-deck.log` for a 429 and compare the cache timestamp — if a later poll
+wrote a good reading, it fixed itself. Rasterize a preview with
 `chrome --headless --screenshot=out.png --window-size=1208,620 file:///...`.
 
 Runtime log: `%APPDATA%\Elgato\StreamDeck\Plugins\<plugin>\claude-deck.log`.
