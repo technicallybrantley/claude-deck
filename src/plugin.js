@@ -10,6 +10,8 @@ import { spawn, execFile } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const PLUGIN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+let PLUGIN_VERSION = "";
+try { PLUGIN_VERSION = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, "manifest.json"), "utf8")).Version ?? ""; } catch {}
 
 const CLAUDE_DIR = path.join(os.homedir(), ".claude");
 const CREDS_FILE = path.join(CLAUDE_DIR, ".credentials.json");
@@ -267,6 +269,235 @@ function rainCellKey(lc, lr, cols, rows, t, busy, burn) {
   return svgWrap(out, false);
 }
 
+// ---------- tile: terminal tail ----------
+const MONO = "Cascadia Mono, Consolas, monospace";
+const LOG_MAX = 60;
+const LOG_STYLE = {
+  start: { g: "+", c: C.accentHi },
+  busy:  { g: ">", c: C.accent },
+  idle:  { g: ".", c: C.dim },
+  end:   { g: "x", c: C.dim },
+  tok:   { g: "$", c: C.text },
+  info:  { g: "#", c: C.dim },
+};
+
+function pushLog(kind, name, detail) {
+  state.log.push({ t: Date.now(), kind, name, detail });
+  if (state.log.length > LOG_MAX) state.log.splice(0, state.log.length - LOG_MAX);
+}
+
+function termCellKey(lc, lr, cols, rows, t) {
+  const LH = 25, PAD = 9, TOP = 24, FS = 17, CW = FS * 0.55; // Consolas advance ≈ 0.55em
+  // Text is quantized to the key grid in both axes: each key holds a whole number
+  // of characters and a whole number of lines, so nothing is ever sliced in half
+  // by the physical gap between keys. Each key draws only its own slice.
+  const perKey = Math.max(4, Math.floor((KEY - PAD * 2) / CW));
+  const perRow = Math.max(1, Math.floor((KEY - 8 - TOP) / LH) + 1);
+  const width = perKey * cols;
+  const log = state.log.slice(-(perRow * rows - 3));
+  const now = Date.now();
+  let out = "";
+  const line = (i, text, color) => {
+    if (Math.floor(i / perRow) !== lr) return "";   // not on this key's row
+    const slice = text.slice(lc * perKey, (lc + 1) * perKey);
+    if (!slice.trim()) return "";
+    return `<text x="${PAD}" y="${TOP + (i % perRow) * LH}" font-family="${MONO}" font-size="${FS}" fill="${color}" xml:space="preserve">${esc(slice)}</text>`;
+  };
+  out += line(0, `claude-deck v${PLUGIN_VERSION}`, C.dim);
+  out += line(1, "-".repeat(width), C.track);
+  log.forEach((ln, k) => {
+    const st = LOG_STYLE[ln.kind] ?? LOG_STYLE.info;
+    const full = `${st.g} ${String(ln.name ?? "").slice(0, 18)} ${ln.detail ?? ""}`.slice(0, width);
+    // Newest line types itself in, one char at a time — the CLI tell
+    out += line(2 + k, full.slice(0, Math.max(0, Math.floor((now - ln.t) / 18))), st.c);
+  });
+  const last = log[log.length - 1];
+  const typing = last && now - last.t < 18 * width;
+  out += line(2 + log.length, `claude@deck $ ${!typing && t % 1000 < 520 ? "_" : ""}`, C.accent);
+  return svgWrap(out, false);
+}
+
+// ---------- tile: Conway's Life ----------
+const LIFE_CELL = 24;
+
+function lifeStep(sim, busy) {
+  const { w, h } = sim;
+  const next = new Uint8Array(w * h);
+  let pop = 0;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let n = 0;
+      for (let dy = -1; dy <= 1; dy++)
+        for (let dx = -1; dx <= 1; dx++) {
+          if (!dx && !dy) continue;
+          // wrap at the edges so gliders sail off one side and back on the other
+          n += sim.cur[((y + dy + h) % h) * w + ((x + dx + w) % w)];
+        }
+      const alive = sim.cur[y * w + x];
+      const live = alive ? (n === 2 || n === 3) : n === 3;
+      next[y * w + x] = live ? 1 : 0;
+      if (live) pop++;
+    }
+  }
+  sim.prev = sim.cur;
+  sim.cur = next;
+  // Every request drops a glider in; a board that dies out or locks up reseeds.
+  if (busy > 0 && Math.random() < 0.18 * busy) lifeGlider(sim);
+  sim.stale = pop === sim.pop ? sim.stale + 1 : 0;
+  sim.pop = pop;
+  if (pop < 6 || sim.stale > 40) lifeSeed(sim, busy);
+}
+
+function lifeGlider(sim) {
+  const g = [[1, 0], [2, 1], [0, 2], [1, 2], [2, 2]];
+  const x0 = Math.floor(Math.random() * sim.w), y0 = Math.floor(Math.random() * sim.h);
+  for (const [dx, dy] of g) sim.cur[((y0 + dy) % sim.h) * sim.w + ((x0 + dx) % sim.w)] = 1;
+}
+
+function lifeSeed(sim, busy) {
+  const fill = 0.12 + 0.04 * Math.min(4, busy);
+  for (let i = 0; i < sim.cur.length; i++) sim.cur[i] = Math.random() < fill ? 1 : 0;
+  sim.stale = 0;
+}
+
+function lifeCellKey(lc, lr, cols, rows, t, sim) {
+  const ox = lc * KEY, oy = lr * KEY;
+  const c0 = Math.floor(ox / LIFE_CELL), c1 = Math.ceil((ox + KEY) / LIFE_CELL);
+  const r0 = Math.floor(oy / LIFE_CELL), r1 = Math.ceil((oy + KEY) / LIFE_CELL);
+  const s = LIFE_CELL - 4;
+  let out = "";
+  for (let y = r0; y < Math.min(r1, sim.h); y++) {
+    for (let x = c0; x < Math.min(c1, sim.w); x++) {
+      const alive = sim.cur[y * sim.w + x];
+      const was = sim.prev?.[y * sim.w + x];
+      if (!alive && !was) continue;
+      const px = x * LIFE_CELL + 2 - ox, py = y * LIFE_CELL + 2 - oy;
+      const fill = alive ? (was ? C.accent : C.accentHi) : C.accent;
+      out += `<rect x="${px}" y="${py}" width="${s}" height="${s}" rx="4" fill="${fill}" opacity="${alive ? 1 : 0.18}"/>`;
+    }
+  }
+  return svgWrap(out, false);
+}
+
+// ---------- tile: burn history (retro system monitor) ----------
+// Built from the raw burn events rather than the once-a-minute tokensHour
+// sample, so the graph has 30s resolution instead of 1-minute steps.
+function burnSeries(buckets, bucketMs) {
+  const now = Date.now();
+  const out = new Array(buckets).fill(0);
+  for (const rec of hourTracker.values()) {
+    for (const e of rec.events) {
+      const idx = buckets - 1 - Math.floor((now - e.t) / bucketMs);
+      if (idx >= 0 && idx < buckets) out[idx] += e.tok;
+    }
+  }
+  return out;
+}
+
+function historyCellKey(lc, lr, cols, rows, t, sim) {
+  const W = cols * KEY, H = rows * KEY;
+  const ox = lc * KEY, oy = lr * KEY;
+  const PAD = 12, HEAD = 30, FOOT = 26;
+  const cw = 16, gap = 3;
+  const n = Math.max(4, Math.floor((W - PAD * 2) / cw));
+  const vals = burnSeries(n, sim.bucketMs);
+  const max = Math.max(...vals, 1);
+  const top = HEAD, bottom = H - FOOT;
+  const blockH = 12, blockGap = 3;
+  const slots = Math.max(1, Math.floor((bottom - top) / (blockH + blockGap)));
+  let out = "";
+  for (let i = 0; i < n; i++) {
+    const x = PAD + i * cw - ox;
+    if (x > KEY + 2 || x + cw - gap < -2) continue;
+    const filled = Math.round(slots * (vals[i] / max));
+    const isNow = i === n - 1;
+    for (let k = 0; k < slots; k++) {
+      const y = bottom - (k + 1) * (blockH + blockGap) + blockGap - oy;
+      if (y > KEY + 2 || y + blockH < -2) continue;
+      const on = k < filled;
+      if (!on && !(k === 0)) { // keep a faint floor row so the axis reads
+        out += `<rect x="${x}" y="${y}" width="${cw - gap}" height="${blockH}" rx="3" fill="${C.track}" opacity="0.12"/>`;
+        continue;
+      }
+      out += `<rect x="${x}" y="${y}" width="${cw - gap}" height="${blockH}" rx="3" fill="${on ? (isNow ? C.accentHi : C.accent) : C.track}" opacity="${on ? 1 : 0.25}"/>`;
+    }
+  }
+  const label = (x, y, s, col, anchor = "start", size = 15) => {
+    const lx = x - ox, ly = y - oy;
+    if (ly < -20 || ly > KEY + 20) return "";
+    return `<text x="${lx}" y="${ly}" text-anchor="${anchor}" font-family="${MONO}" font-size="${size}" fill="${col}">${esc(s)}</text>`;
+  };
+  const mins = Math.round((n * sim.bucketMs) / 60000);
+  out += label(PAD, 22, `BURN ${mins}m`, C.dim);
+  out += label(W - PAD, 22, `${fmtNum(state.burn?.tokensHour ?? 0)}/hr`, C.accent, "end");
+  out += label(PAD, H - 8, `-${mins}m`, C.dim);
+  out += label(W - PAD, H - 8, "now", C.dim, "end");
+  return svgWrap(out, false);
+}
+
+// ---------- tile: retro pipes ----------
+const PIPE_CELL = 24, PIPE_TINTS = ["#d97757", "#f0a184", "#b0603f"];
+const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]];
+
+function pipeStep(sim, busy) {
+  const want = Math.min(4, 1 + busy);
+  while (sim.pipes.length < want) sim.pipes.push(newPipe(sim));
+  if (sim.fade > 0) {                      // wiping: fade out, then start over
+    sim.fade -= 0.06;
+    if (sim.fade <= 0) { sim.pipes = []; sim.cells = 0; sim.fade = 0; }
+    return;
+  }
+  for (const p of sim.pipes) {
+    const opts = DIRS
+      .map(([dx, dy]) => [p.x + dx, p.y + dy, dx, dy])
+      .filter(([x, y]) => x >= 0 && y >= 0 && x < sim.w && y < sim.h);
+    if (!opts.length) { p.done = true; continue; }
+    // 70% chance of carrying straight on — pipes should look like pipes, not noise
+    const straight = opts.find(([, , dx, dy]) => dx === p.dx && dy === p.dy);
+    const pick = straight && Math.random() < 0.7 ? straight : opts[Math.floor(Math.random() * opts.length)];
+    p.x = pick[0]; p.y = pick[1]; p.dx = pick[2]; p.dy = pick[3];
+    p.pts.push([p.x, p.y]);
+    if (p.pts.length > 400) p.pts.shift();
+    sim.cells++;
+  }
+  if (sim.cells > sim.w * sim.h * 0.55) sim.fade = 1;
+}
+
+function newPipe(sim) {
+  const d = DIRS[Math.floor(Math.random() * DIRS.length)];
+  const x = Math.floor(Math.random() * sim.w), y = Math.floor(Math.random() * sim.h);
+  return { x, y, dx: d[0], dy: d[1], pts: [[x, y]], tint: PIPE_TINTS[Math.floor(Math.random() * PIPE_TINTS.length)] };
+}
+
+function pipesCellKey(lc, lr, cols, rows, t, sim) {
+  const ox = lc * KEY, oy = lr * KEY;
+  const half = PIPE_CELL / 2, thick = 12;
+  const op = sim.fade > 0 ? Math.max(0, sim.fade) : 1;
+  let out = "";
+  for (const p of sim.pipes) {
+    for (let i = 0; i < p.pts.length; i++) {
+      const [x, y] = p.pts[i];
+      const cx = x * PIPE_CELL + half - ox, cy = y * PIPE_CELL + half - oy;
+      if (cx < -PIPE_CELL || cx > KEY + PIPE_CELL || cy < -PIPE_CELL || cy > KEY + PIPE_CELL) continue;
+      // joint at every point, plus a bar bridging to the previous point
+      out += `<rect x="${cx - thick / 2}" y="${cy - thick / 2}" width="${thick}" height="${thick}" rx="3" fill="${p.tint}" opacity="${op}"/>`;
+      if (i === 0) continue;
+      const [px, py] = p.pts[i - 1];
+      const pcx = px * PIPE_CELL + half - ox, pcy = py * PIPE_CELL + half - oy;
+      const x0 = Math.min(cx, pcx) - thick / 2, y0 = Math.min(cy, pcy) - thick / 2;
+      const w = Math.abs(cx - pcx) + thick, h = Math.abs(cy - pcy) + thick;
+      out += `<rect x="${x0}" y="${y0}" width="${w}" height="${h}" rx="3" fill="${p.tint}" opacity="${op}"/>`;
+    }
+    const head = p.pts[p.pts.length - 1];
+    if (head) {
+      const hx = head[0] * PIPE_CELL + half - ox, hy = head[1] * PIPE_CELL + half - oy;
+      if (hx > -30 && hx < KEY + 30 && hy > -30 && hy < KEY + 30)
+        out += `<rect x="${hx - 8}" y="${hy - 8}" width="16" height="16" rx="4" fill="${C.text}" opacity="${0.9 * op}"/>`;
+    }
+  }
+  return svgWrap(out, false);
+}
+
 // ---------- formatting ----------
 function fmtReset(iso) {
   if (!iso) return "";
@@ -296,6 +527,7 @@ const state = {
   usageAt: 0,
   sessions: [],
   agents: 0,          // live SDK-spawned sessions — counted, but not shown as sessions
+  log: [],            // recent events, tailed by the terminal tile
   today: null,
   week: null,         // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
@@ -431,6 +663,14 @@ async function pollSessions() {
       } catch {}
     }
     out.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+    // Diff against the previous poll so the terminal tile has something to tail
+    const before = new Map(state.sessions.map((s) => [s.pid, s]));
+    for (const s of out) {
+      const was = before.get(s.pid);
+      if (!was) pushLog("start", s.name, "opened");
+      else if (was.status !== s.status) pushLog(s.status && s.status !== "idle" ? "busy" : "idle", s.name, s.status ?? "?");
+    }
+    for (const [pid, s] of before) if (!out.some((x) => x.pid === pid)) pushLog("end", s.name, "closed");
     const changed = agents !== state.agents ||
       JSON.stringify(out.map((s) => [s.pid, s.status])) !== JSON.stringify(state.sessions.map((s) => [s.pid, s.status]));
     state.sessions = out;
@@ -618,10 +858,13 @@ async function pollWeek() {
 // ---------- data: burn rate (incremental tail of recent transcripts) ----------
 const hourTracker = new Map(); // file -> { offset, rest, events: [{t, tok}] }
 
+let burnPrimed = false;
+
 async function pollBurn() {
   try {
     const now = Date.now();
     const scanCutoff = now - 90 * 60_000;
+    const fresh = new Map(); // project dir -> tokens seen this tick, for the terminal tile
     const dirs = await fsp.readdir(PROJECTS_DIR).catch(() => []);
     for (const d of dirs) {
       const dir = path.join(PROJECTS_DIR, d);
@@ -660,6 +903,7 @@ async function pollBurn() {
               const e = { t: new Date(j.timestamp).getTime(), tok };
               if (mid) rec.seen.set(mid, e);
               rec.events.push(e);
+              fresh.set(d, (fresh.get(d) ?? 0) + tok);
             }
           } finally { await fh.close(); }
         }
@@ -668,6 +912,13 @@ async function pollBurn() {
         hourTracker.set(fp, rec);
       }
     }
+    // The first pass reads whole file tails, so everything looks "new" — don't
+    // report that backlog as if it just happened.
+    if (burnPrimed) {
+      for (const [dir, tok] of [...fresh.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2))
+        pushLog("tok", dir.split("-").filter(Boolean).pop() ?? "claude", `+${fmtNum(tok)} tok`);
+    }
+    burnPrimed = true;
     let tokensHour = 0;
     for (const rec of hourTracker.values()) for (const e of rec.events) if (now - e.t < 3.6e6) tokensHour += e.tok;
     state.burn = { tokensHour, at: now };
@@ -795,8 +1046,8 @@ function render(context, kind) {
         : (busy > 0 ? `${busy} working` : "all idle") + (a > 0 ? ` +${a} sdk` : "");
       return setImage(context, bigCountKey("CLAUDE CODE", n, sub, busy > 0 ? C.ok : C.dim, busy > 0 ? animPhase : null, a > 0 ? 15 : 17));
     }
-    case "activity":
-      return renderRain();
+    case "activity": case "term": case "life": case "history": case "pipes":
+      return renderTiles(kind, false);
     case "chart-open":
       return setImage(context, chartOpenKey(state.week?.days ?? [], chartMetric));
     case "chart-cell": {
@@ -842,34 +1093,82 @@ function renderAll(kinds) {
   for (const [context, v] of views) if (kinds.includes(v.kind)) render(context, v.kind);
 }
 
-// Every activity key is redrawn together: they share one canvas, and adding or
+// Every key of a tile is redrawn together: they share one canvas, and adding or
 // removing a key changes the bounding box for all of them. Grouped by device so
 // two blocks on two decks don't get merged into one oversized canvas.
-let rainT0 = Date.now();
-let rainPaused = false;
-let rainRunning = false;
+const TILE_KINDS = ["activity", "term", "life", "history", "pipes"];
+// ms = frame interval while a session is working. idleMs 0 means freeze at rest:
+// push one final calm frame and then stop sending until work resumes.
+const TILE_SPEC = {
+  activity: { ms: 110, idleMs: 0 },
+  pipes:    { ms: 130, idleMs: 0 },
+  life:     { ms: 220, idleMs: 0 },
+  term:     { ms: 120, idleMs: 260 },   // keeps typing/blinking even when quiet
+  history:  { ms: 400, idleMs: 1200 },  // the graph should keep scrolling
+};
+let tilesT0 = Date.now();
+let tilesPaused = false;
+const tileRunning = new Set();
+const tileLast = new Map();
+const sims = new Map();   // per block+size simulation state (Life board, pipe paths)
 
-function renderRain() {
-  const byDevice = new Map();
-  for (const [context, v] of views) {
-    if (v.kind !== "activity") continue;
-    const key = v.device ?? "";
-    if (!byDevice.has(key)) byDevice.set(key, []);
-    byDevice.get(key).push([context, v]);
+function simFor(kind, key, cols, rows) {
+  let s = sims.get(key);
+  if (s) return s;
+  const W = cols * KEY, H = rows * KEY;
+  if (kind === "life") {
+    const w = Math.max(4, Math.floor(W / LIFE_CELL)), h = Math.max(4, Math.floor(H / LIFE_CELL));
+    s = { w, h, cur: new Uint8Array(w * h), prev: null, pop: 0, stale: 0 };
+    lifeSeed(s, 1);
+  } else if (kind === "pipes") {
+    s = { w: Math.max(3, Math.floor(W / PIPE_CELL)), h: Math.max(3, Math.floor(H / PIPE_CELL)), pipes: [], cells: 0, fade: 0 };
+  } else if (kind === "history") {
+    s = { bucketMs: 30_000 };
+  } else s = {};
+  sims.set(key, s);
+  return s;
+}
+
+function tileStep(kind, sim, busy) {
+  if (kind === "life") lifeStep(sim, busy);
+  else if (kind === "pipes") pipeStep(sim, busy);
+}
+
+function tileCell(kind, lc, lr, cols, rows, t, sim, busy, burn) {
+  switch (kind) {
+    case "activity": return rainCellKey(lc, lr, cols, rows, t, busy, burn);
+    case "term": return termCellKey(lc, lr, cols, rows, t);
+    case "life": return lifeCellKey(lc, lr, cols, rows, t, sim);
+    case "history": return historyCellKey(lc, lr, cols, rows, t, sim);
+    case "pipes": return pipesCellKey(lc, lr, cols, rows, t, sim);
   }
-  if (!byDevice.size) return;
-  const t = Date.now() - rainT0;
-  const busy = rainPaused ? 0 : state.sessions.filter((s) => s.status && s.status !== "idle").length;
+}
+
+function renderTiles(kind, step) {
+  const groups = new Map();
+  for (const [context, v] of views) {
+    if (v.kind !== kind) continue;
+    const key = v.device ?? "";
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push([context, v]);
+  }
+  if (!groups.size) return;
+  const t = Date.now() - tilesT0;
+  const busy = tilesPaused ? 0 : state.sessions.filter((s) => s.status && s.status !== "idle").length;
   const burn = state.burn?.tokensHour ?? 0;
-  for (const group of byDevice.values()) {
+  for (const [device, group] of groups) {
     let minC = Infinity, minR = Infinity, maxC = -Infinity, maxR = -Infinity;
     for (const [, v] of group) {
       minC = Math.min(minC, v.coords.column); maxC = Math.max(maxC, v.coords.column);
       minR = Math.min(minR, v.coords.row); maxR = Math.max(maxR, v.coords.row);
     }
     const cols = maxC - minC + 1, rows = maxR - minR + 1;
-    for (const [context, v] of group)
-      setImage(context, rainCellKey(v.coords.column - minC, v.coords.row - minR, cols, rows, t, busy, burn));
+    const sim = simFor(kind, `${kind}|${device}|${cols}x${rows}`, cols, rows);
+    if (step) tileStep(kind, sim, busy);   // sims advance once per frame, not per key
+    for (const [context, v] of group) {
+      const img = tileCell(kind, v.coords.column - minC, v.coords.row - minR, cols, rows, t, sim, busy, burn);
+      if (img) setImage(context, img);
+    }
   }
 }
 
@@ -957,9 +1256,9 @@ function runCustom(command, context) {
 
 function onKeyDown(context, kind, device) {
   switch (kind) {
-    case "activity":
-      rainPaused = !rainPaused;   // a big animated block is worth being able to mute
-      renderRain();
+    case "activity": case "term": case "life": case "history": case "pipes":
+      tilesPaused = !tilesPaused;   // a big animated block is worth being able to mute
+      for (const k of TILE_KINDS) renderTiles(k, false);
       return showOk(context);
     case "chart-open": {
       if (!device) return showAlert(context);
@@ -1068,26 +1367,32 @@ if (process.argv.includes("--selftest")) {
     const label = (x, y, s) => `<text x="${x}" y="${y}" font-family="Segoe UI, sans-serif" font-size="19" fill="#9b96a8">${s}</text>`;
     let inner = "", w, h;
 
-    if (process.argv.includes("--rain")) {
+    const tile = process.argv.includes("--rain") ? "activity" : argOf("--tile");
+    if (tile) {
       // Several frames side by side, since a still can't show motion:
-      // npm run preview -- --rain --out rain.svg [--cols 3 --rows 4 --busy 3 --burn 36000000]
+      // npm run preview -- --tile life --out life.svg [--cols 3 --rows 4 --busy 3]
       await pollSessions();
       await pollBurn();
       const cols = Number(argOf("--cols") ?? 3), rows = Number(argOf("--rows") ?? 4);
       const busy = Number(argOf("--busy") ?? Math.max(1, state.sessions.filter((s) => s.status && s.status !== "idle").length));
       const burn = Number(argOf("--burn") ?? state.burn?.tokensHour ?? 0);
+      // Backdate the seeded log so the terminal tile shows finished lines plus
+      // one mid-type, instead of every line arriving at once
+      state.log.forEach((l, i) => { l.t = Date.now() - (state.log.length - i) * 380; });
+      const sim = simFor(tile, `preview|${tile}|${cols}x${rows}`, cols, rows);
       const frames = [0, 400, 800, -1];   // -1 renders the idle/at-rest state
       const blockW = cols * PITCH;
       frames.forEach((t, k) => {
+        if (k > 0 && t >= 0) for (let i = 0; i < 6; i++) tileStep(tile, sim, busy);
         const x0 = k * (blockW + 34);
         for (let c = 0; c < cols; c++)
           for (let r = 0; r < rows; r++)
-            inner += place(rainCellKey(c, r, cols, rows, Math.max(0, t), t < 0 ? 0 : busy, burn), x0 + c * PITCH, 40 + r * PITCH);
-        inner += label(x0, 28, t < 0 ? "at rest (nothing busy)" : `t = ${t}ms`);
+            inner += place(tileCell(tile, c, r, cols, rows, Math.max(0, t), sim, t < 0 ? 0 : busy, burn), x0 + c * PITCH, 40 + r * PITCH);
+        inner += label(x0, 28, t < 0 ? "at rest (nothing busy)" : `${tile} — t = ${t}ms`);
       });
       w = frames.length * (blockW + 34) - 34;
       h = 40 + rows * PITCH;
-      log(`rain preview: ${cols}x${rows}, busy=${busy}, burn=${fmtNum(burn)}/hr`);
+      log(`tile preview: ${tile} ${cols}x${rows}, busy=${busy}, burn=${fmtNum(burn)}/hr, log=${state.log.length} lines`);
     } else {
       await pollWeek();
       chartMetric = argOf("--metric") ?? "tokens";
@@ -1117,6 +1422,9 @@ if (process.argv.includes("--selftest")) {
   ws.on("open", () => {
     send({ event: registerEvent, uuid: pluginUUID });
     log("registered with Stream Deck");
+    pushLog("info", "boot", "claude-deck ok");
+    pushLog("info", "tail", "~/.claude/sessions");
+    pushLog("info", "watch", "burn-rate 60s");
     if (Date.now() - state.usageAt > 90_000) pollUsage();
     pollSessions();
     pollToday();
@@ -1167,19 +1475,26 @@ if (process.argv.includes("--selftest")) {
   setInterval(() => {
     if ([...views.values()].some((v) => v.kind === "chart-cell" || v.kind === "chart-open")) pollWeek();
   }, 300_000);
-  // Activity rain: ~9fps, and only while a session is actually working. 12 keys
-  // of setImage is real load on the Stream Deck app, so when everything goes idle
-  // this pushes one final calm frame and then stops sending entirely.
+  // Tile frame pump. Each kind has its own rate, and a kind only costs anything
+  // when its keys are actually on screen — 12 keys of setImage at speed is real
+  // load on the Stream Deck app, so idle tiles either slow down or stop entirely.
   setInterval(() => {
-    if (![...views.values()].some((v) => v.kind === "activity")) { rainRunning = false; return; }
     const busy = state.sessions.filter((s) => s.status && s.status !== "idle").length;
-    if (busy === 0 || rainPaused) {
-      if (rainRunning) { rainRunning = false; renderRain(); }
-      return;
+    const active = busy > 0 && !tilesPaused;
+    const now = Date.now();
+    for (const kind of TILE_KINDS) {
+      if (![...views.values()].some((v) => v.kind === kind)) { tileRunning.delete(kind); continue; }
+      const interval = active ? TILE_SPEC[kind].ms : TILE_SPEC[kind].idleMs;
+      if (!interval) {
+        if (tileRunning.has(kind)) { tileRunning.delete(kind); renderTiles(kind, false); }
+        continue;
+      }
+      if (now - (tileLast.get(kind) ?? 0) < interval) continue;
+      tileLast.set(kind, now);
+      tileRunning.add(kind);
+      renderTiles(kind, active);
     }
-    rainRunning = true;
-    renderRain();
-  }, 110);
+  }, 60);
   // Animation ticker: busy-session dots + red pulse on gauges at 90%+
   setInterval(() => {
     animPhase = (animPhase + 1) % 3;

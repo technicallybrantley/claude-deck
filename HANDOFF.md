@@ -79,11 +79,27 @@ Shared trick: render in whole-canvas coordinates, translate by `-col*144, -row*1
 per key, let the viewBox clip. Cull off-key geometry before emitting it or each
 key's SVG carries the entire canvas.
 
-Rain specifics: lane speed and phase come from a `Math.sin` hash of the lane
-index, **not** `Math.random()` — lanes have to be identical frame to frame.
-Frames run at ~9fps and only while a session is busy; on going idle it pushes one
-final calm frame and then stops sending. Keep that guard, 12 keys of `setImage`
-at speed is real load on the Stream Deck app.
+All five tiles (`TILE_KINDS`) share one frame pump. Per-kind rate and idle
+behavior live in `TILE_SPEC`: `idleMs: 0` means freeze — push one final calm
+frame, then stop sending until work resumes. Keep that guard; 12 keys of
+`setImage` at speed is real load on the Stream Deck app. `tileCell()` and
+`tileStep()` are the only per-kind switches, so `--preview` and the live
+renderer can't drift apart.
+
+Per-tile things that will bite:
+
+- **Rain** — lane speed and phase come from a `Math.sin` hash of the lane index,
+  **not** `Math.random()`; lanes must be identical frame to frame. One stream per
+  lane leaves whole keys empty, hence two staggered streams above a threshold.
+- **Terminal** — text is quantized to the key grid in *both* axes (whole
+  characters per key, whole lines per key row). Without that, glyphs and line
+  boxes get sliced in half by the physical gap and it looks broken. If you change
+  the font or size, recheck `CW ≈ 0.55em` for Consolas.
+- **Life / Pipes** — carry simulation state, so they step once per *frame*, not
+  once per key. State lives in `sims`, keyed by kind+device+size, which is also
+  what makes two differently-sized blocks work independently.
+- **History** — reads `hourTracker` events directly rather than the once-a-minute
+  `tokensHour` sample, which is the only way to get sub-minute resolution.
 
 ## Not every `~/.claude/sessions/*.json` is a session the user can see
 

@@ -25,7 +25,11 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Quick Prompt** | Configurable: opens quick chat and pastes a canned prompt (optionally presses Enter). Overwrites the clipboard. |
 | **Claude Custom** | A Claude-styled spare key that opens anything you set: app, URL, or folder. |
 | **7-Day Chart** | Press to turn the *whole deck* into a 7-day block chart of your Claude Code activity. Stream Deck XL only. |
-| **Activity Rain** | Token rain that falls across a block of keys while Claude Code is working. Press to pause. |
+| **Activity Rain** | Token rain falling across a block of keys while Claude Code is working. |
+| **Terminal Tail** | A live CLI tail of session and token events, with a blinking cursor. |
+| **Game of Life** | Conway's Life in Claude orange; every request seeds a new glider. |
+| **Burn History** | Retro system-monitor graph of token burn over the last several minutes. |
+| **Pipes** | The screensaver, in blocks. Pipe count tracks how many sessions are working. |
 
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
@@ -48,21 +52,30 @@ Claude Code activity **on this machine only** — expect it to sit below the
 account-wide gauges if you also use Claude Desktop, claude.ai, or another
 computer.
 
-### Activity Rain
+### Animated tiles
 
-Drop several **Activity Rain** keys next to each other — a 3x4 block works well —
-and they stop being separate keys: the plugin takes their bounding box as one
-canvas and each key draws its slice of a single animation. Put the block
-anywhere, in any rectangle you like; nothing is hardcoded, and moving or
-resizing it needs no configuration.
+Five keys — **Activity Rain**, **Terminal Tail**, **Game of Life**, **Burn
+History** and **Pipes** — aren't really single keys. Drop several copies of one
+of them next to each other (a 3x4 block works well) and they stop being separate
+keys: the plugin takes their bounding box as one canvas and each key draws its
+slice of a single animation. Put a block anywhere, in any rectangle; nothing is
+hardcoded, so moving or resizing it needs no configuration, and a lone key just
+renders the whole thing by itself.
 
-The motion is real telemetry, not decoration:
+They're driven by real telemetry rather than a loop:
 
-- **Fall speed** scales with your burn rate (tokens/hour).
-- **How many lanes run** scales with how many sessions are working.
-- **At rest** the lanes fade to a dim grid with the spark in the middle, and the
-  plugin stops pushing frames entirely — it only animates while something is
-  actually working. Press any key in the block to pause it by hand.
+| Tile | What the motion means |
+|---|---|
+| **Activity Rain** | Fall speed = burn rate; number of running lanes = sessions working. |
+| **Terminal Tail** | Sessions opening, closing and flipping busy/idle, plus per-project token totals as they land. Text is quantized to the key grid so no character or line is ever cut in half by the gap between keys. |
+| **Game of Life** | A real Conway simulation with wrapped edges. Each request drops a glider in; a board that dies out or stalls reseeds itself. |
+| **Burn History** | Tokens per 30s bucket over the last ~13 minutes, newest column on the right. Actual history, which the gauges don't give you. |
+| **Pipes** | One pipe per working session, up to four. Fills the block, then wipes and starts over. |
+
+**At rest** the animated ones stop entirely — Rain, Life and Pipes freeze on a
+final calm frame and the plugin stops pushing images until work resumes; Terminal
+and History slow down but keep the cursor blinking and the graph scrolling.
+Press any key in a block to pause it by hand.
 
 | Limits at a glance | Agents at a glance |
 |---|---|
