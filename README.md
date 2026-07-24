@@ -10,7 +10,7 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 
 | Key | What it shows / does |
 |---|---|
-| **Session 5h** | Live 5-hour limit % ring + reset countdown. Press to refresh. |
+| **Session 5h** | Live 5-hour limit % ring + reset countdown. At 100% it flips to a CRT-style countdown showing exactly when the window reopens. Press to refresh. |
 | **Weekly** | Weekly limit % ring + per-model weekly % underneath. |
 | **Today** | Today's Claude Code activity: chats, messages, tokens. |
 | **Sessions** | Count of running Claude Code sessions and how many are busy (5s refresh). Press to cycle per-session details. Background Agent SDK sessions aren't windows you can switch to, so they're reported separately as `+N sdk` rather than counted. |
@@ -108,7 +108,7 @@ The plugin speaks the Stream Deck WebSocket protocol directly — the only runti
 
 ## How usage data works
 
-- **Limits**: `GET https://api.anthropic.com/api/oauth/usage` authorized with the OAuth token Claude Code keeps in `~/.claude/.credentials.json`. This is the same source the `/usage` command uses. It is not a publicly documented API, so it may change; the plugin logs the raw response shape to make fixes easy.
+- **Limits**: `GET https://api.anthropic.com/api/oauth/usage` authorized with the OAuth token Claude Code keeps in `~/.claude/.credentials.json`. This is the same source the `/usage` command uses. It is not a publicly documented API, so it may change; the plugin logs the raw response shape to make fixes easy. The poll rate adapts to how fast the number is moving — 90s normally, 45s past 75%, 20s past 95%, and 15s around a window rollover — so the deck doesn't sit behind the desktop app exactly when you're watching it.
 - **Sessions**: `~/.claude/sessions/*.json`, filtered to live processes.
 - **Today / 7-Day Chart**: parsed from `~/.claude/projects/**/*.jsonl` transcripts (Claude Code activity only — desktop chats don't write local logs, though they do count toward the limit gauges). The usage endpoint only reports *current* utilization, so any history has to come from these local files.
 

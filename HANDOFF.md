@@ -164,6 +164,26 @@ means switching to a profile bundled in the `.sdPlugin` folder.
   rebuilds are byte-identical unless the layout changed and a regenerated
   profile updates the installed one instead of appearing twice.
 
+## Usage poll rate is adaptive, and the reset is laggy on the server side
+
+`nextUsageDelay()` picks the interval from the current reading: 90s normally,
+45s past 75%, 20s past 95%, 15s from two minutes before a rollover until five
+minutes after. A flat interval was wrong in both directions — too slow to track
+the number when it matters, and it left a stale 100% on screen after the window
+had already reopened.
+
+The thing worth knowing: **`resets_at` passing does not mean the server has
+rolled the window.** It can keep reporting the old utilization for a while
+afterwards, which is why the fast band extends *past* the reset instead of
+stopping at it, and why it's bounded (five minutes) so a stale `resets_at` can't
+pin the poller at 15s indefinitely. `scheduleResetPoll()` still fires a one-shot
+poll at reset + 8s on top of this.
+
+429 backoff is now separate state (`usageBackoff`) from the adaptive rate, so a
+throttle can't be mistaken for a normal interval and vice versa. Every successful
+poll logs `usage: 5h=..% wk=..% next=..s` — check that first when the number
+looks stale.
+
 ## Two different data sources — don't reconcile them
 
 - Session/Weekly/Model gauges hit `GET https://api.anthropic.com/api/oauth/usage`

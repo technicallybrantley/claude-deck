@@ -91,6 +91,35 @@ function gaugeKey(label, pct, sub, pulsePhase = null) {
     <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
 
+// Shown instead of the gauge once the 5h window is maxed: a CRT-style countdown
+// to the reset, since "100%" on its own tells you nothing you can act on.
+function capKey(resetsAt, phase) {
+  const now = Date.now();
+  const ms = new Date(resetsAt).getTime() - now;
+  const p2 = (n) => String(n).padStart(2, "0");
+  const live = ms > 0;
+  const h = Math.floor(ms / 3.6e6), m = Math.floor((ms % 3.6e6) / 6e4), s = Math.floor((ms % 6e4) / 1000);
+  // Colons stay lit: the key only redraws every 600ms, so a 1Hz blink aliases
+  // into an irregular stutter. The pulsing border carries the motion instead.
+  const clock = !live ? "--:--" : h > 0 ? `${h}:${p2(m)}:${p2(s)}` : `${p2(m)}:${p2(s)}`;
+  const size = live && h > 0 ? 31 : 44;
+  const done = live ? Math.max(0, Math.min(1, 1 - ms / (5 * 3.6e6))) : 1;
+  const segs = 11, lit = Math.round(segs * done);
+  const bar = Array.from({ length: segs }, (_, i) =>
+    `<rect x="${13 + i * 11.6}" y="119" width="8" height="10" rx="2" fill="${i < lit ? C.accent : C.track}" opacity="${i < lit ? 1 : 0.35}"/>`).join("");
+  // faint CRT scanlines
+  let scan = "";
+  for (let y = 10; y < 138; y += 6) scan += `<rect x="6" y="${y}" width="132" height="1" fill="${C.text}" opacity="0.045"/>`;
+  const at = live ? new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "any moment";
+  return svgWrap(`
+    ${scan}
+    <rect x="5" y="5" width="134" height="134" rx="12" fill="none" stroke="${C.bad}" stroke-width="3" opacity="${[0.35, 0.7, 1][phase % 3]}"/>
+    <text x="72" y="33" text-anchor="middle" font-family="${MONO}" font-size="15" font-weight="700" letter-spacing="1.5" fill="${C.bad}">SESSION CAP</text>
+    <text x="72" y="83" text-anchor="middle" font-family="${MONO}" font-size="${size}" font-weight="700" fill="${C.accentHi}" xml:space="preserve">${clock}</text>
+    <text x="72" y="107" text-anchor="middle" font-family="${MONO}" font-size="14" fill="${C.dim}">${live ? "resets " + esc(at) : "resetting"}</text>
+    ${bar}`, false);
+}
+
 function linesKey(title, rows, accent = C.accent) {
   const rowSvg = rows
     .map((r, i) => {
@@ -551,9 +580,26 @@ function pickBucket(o) {
   return pct == null && !resetsAt ? null : { pct, resetsAt };
 }
 
-const USAGE_DELAY_BASE = 120_000;
-let usageDelay = USAGE_DELAY_BASE;
+const USAGE_DELAY_BASE = 90_000;
+let usageBackoff = 0;   // set by 429s only; overrides the adaptive rate below
 let lastUsageAttempt = 0;
+
+// Poll rate follows how much the number is about to move. A flat 2 minutes meant
+// the deck could sit a couple of percent behind the desktop app right when you
+// care most, and could show a stale 100% long after the window had rolled.
+function nextUsageDelay() {
+  if (usageBackoff) return usageBackoff;
+  const b = state.usage?.fiveHour;
+  const pct = b?.pct ?? 0;
+  const ms = b?.resetsAt ? new Date(b.resetsAt).getTime() - Date.now() : Infinity;
+  // The server can keep reporting the old window for a while after resets_at
+  // passes, so keep asking until it actually flips rather than waiting a whole
+  // cycle. Bounded, so a stale resets_at can't pin us at 15s forever.
+  if (ms > -5 * 60_000 && ms < 2 * 60_000) return 15_000;
+  if (pct >= 95) return 20_000;
+  if (pct >= 75) return 45_000;
+  return USAGE_DELAY_BASE;
+}
 
 // Survive restarts without re-polling: reuse the last good reading for up to 30 min
 const CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
@@ -574,9 +620,12 @@ async function pollUsage() {
         "Content-Type": "application/json",
       },
     });
-    if (res.status === 429) { usageDelay = Math.min(usageDelay * 2, 900_000); throw new Error(`usage endpoint HTTP 429 (backing off to ${usageDelay / 1000}s)`); }
+    if (res.status === 429) {
+      usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 120_000, 900_000);
+      throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1000}s)`);
+    }
     if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
-    usageDelay = USAGE_DELAY_BASE;
+    usageBackoff = 0;
     const j = await res.json();
     if (!state.loggedRaw) {
       state.loggedRaw = true;
@@ -615,6 +664,8 @@ async function pollUsage() {
       state.pctHistory = state.pctHistory.filter((h) => state.usageAt - h.t < 3.6e6);
     }
     try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt })); } catch {}
+    // One line per poll so the adaptive rate is visible when something looks stale
+    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% next=${nextUsageDelay() / 1000}s`);
     scheduleResetPoll();
   } catch (e) {
     state.usageErr = String(e.message ?? e);
@@ -986,6 +1037,7 @@ function render(context, kind) {
     case "usage-session": {
       if (state.usageErr && !state.usage) return setImage(context, gaugeKey("SESSION 5H", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.fiveHour;
+      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey(b.resetsAt, animPhase));
       return setImage(context, gaugeKey("SESSION 5H", b?.pct ?? null, b ? fmtReset(b.resetsAt) : "no data", b?.pct >= 90 ? animPhase : null));
     }
     case "usage-weekly": {
@@ -1368,7 +1420,21 @@ if (process.argv.includes("--selftest")) {
     let inner = "", w, h;
 
     const tile = process.argv.includes("--rain") ? "activity" : argOf("--tile");
-    if (tile) {
+    if (process.argv.includes("--cap")) {
+      // npm run preview -- --cap --out cap.svg
+      const now = Date.now();
+      const cases = [
+        ["2h 41m left", now + (2 * 3600 + 41 * 60 + 7) * 1000],
+        ["47m left", now + (47 * 60 + 12) * 1000],
+        ["38s left", now + 38_000],
+        ["past reset", now - 5_000],
+      ];
+      cases.forEach(([lbl, at], i) => {
+        inner += place(capKey(new Date(at).toISOString(), i), i * PITCH, 40);
+        inner += label(i * PITCH, 28, lbl);
+      });
+      w = cases.length * PITCH; h = 40 + KEY;
+    } else if (tile) {
       // Several frames side by side, since a still can't show motion:
       // npm run preview -- --tile life --out life.svg [--cols 3 --rows 4 --busy 3]
       await pollSessions();
@@ -1465,7 +1531,7 @@ if (process.argv.includes("--selftest")) {
     }
   });
 
-  (function usageLoop() { setTimeout(async () => { await pollUsage(); usageLoop(); }, usageDelay); })();
+  (function usageLoop() { setTimeout(async () => { await pollUsage(); usageLoop(); }, nextUsageDelay()); })();
   setInterval(pollSessions, 5_000);
   setInterval(pollToday, 300_000);
   pollBurn();

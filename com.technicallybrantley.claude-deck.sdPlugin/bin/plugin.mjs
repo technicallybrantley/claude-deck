@@ -3796,6 +3796,28 @@ function gaugeKey(label, pct, sub, pulsePhase = null) {
     ${has ? `<rect x="14" y="90" width="${Math.max(8, 116 * p / 100)}" height="12" rx="6" fill="${col}"/>` : ""}
     <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
+function capKey(resetsAt, phase) {
+  const now = Date.now();
+  const ms = new Date(resetsAt).getTime() - now;
+  const p2 = (n) => String(n).padStart(2, "0");
+  const live = ms > 0;
+  const h = Math.floor(ms / 36e5), m = Math.floor(ms % 36e5 / 6e4), s = Math.floor(ms % 6e4 / 1e3);
+  const clock = !live ? "--:--" : h > 0 ? `${h}:${p2(m)}:${p2(s)}` : `${p2(m)}:${p2(s)}`;
+  const size = live && h > 0 ? 31 : 44;
+  const done = live ? Math.max(0, Math.min(1, 1 - ms / (5 * 36e5))) : 1;
+  const segs = 11, lit = Math.round(segs * done);
+  const bar = Array.from({ length: segs }, (_, i) => `<rect x="${13 + i * 11.6}" y="119" width="8" height="10" rx="2" fill="${i < lit ? C.accent : C.track}" opacity="${i < lit ? 1 : 0.35}"/>`).join("");
+  let scan = "";
+  for (let y = 10; y < 138; y += 6) scan += `<rect x="6" y="${y}" width="132" height="1" fill="${C.text}" opacity="0.045"/>`;
+  const at = live ? new Date(resetsAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" }) : "any moment";
+  return svgWrap(`
+    ${scan}
+    <rect x="5" y="5" width="134" height="134" rx="12" fill="none" stroke="${C.bad}" stroke-width="3" opacity="${[0.35, 0.7, 1][phase % 3]}"/>
+    <text x="72" y="33" text-anchor="middle" font-family="${MONO}" font-size="15" font-weight="700" letter-spacing="1.5" fill="${C.bad}">SESSION CAP</text>
+    <text x="72" y="83" text-anchor="middle" font-family="${MONO}" font-size="${size}" font-weight="700" fill="${C.accentHi}" xml:space="preserve">${clock}</text>
+    <text x="72" y="107" text-anchor="middle" font-family="${MONO}" font-size="14" fill="${C.dim}">${live ? "resets " + esc(at) : "resetting"}</text>
+    ${bar}`, false);
+}
 function linesKey(title, rows, accent = C.accent) {
   const rowSvg = rows.map((r, i) => {
     const y = 62 + i * 31;
@@ -4209,9 +4231,19 @@ function pickBucket(o) {
   const resetsAt = o.resets_at ?? o.resetsAt ?? null;
   return pct == null && !resetsAt ? null : { pct, resetsAt };
 }
-var USAGE_DELAY_BASE = 12e4;
-var usageDelay = USAGE_DELAY_BASE;
+var USAGE_DELAY_BASE = 9e4;
+var usageBackoff = 0;
 var lastUsageAttempt = 0;
+function nextUsageDelay() {
+  if (usageBackoff) return usageBackoff;
+  const b = state.usage?.fiveHour;
+  const pct = b?.pct ?? 0;
+  const ms = b?.resetsAt ? new Date(b.resetsAt).getTime() - Date.now() : Infinity;
+  if (ms > -5 * 6e4 && ms < 2 * 6e4) return 15e3;
+  if (pct >= 95) return 2e4;
+  if (pct >= 75) return 45e3;
+  return USAGE_DELAY_BASE;
+}
 var CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
 try {
   const c = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
@@ -4234,11 +4266,11 @@ async function pollUsage() {
       }
     });
     if (res.status === 429) {
-      usageDelay = Math.min(usageDelay * 2, 9e5);
-      throw new Error(`usage endpoint HTTP 429 (backing off to ${usageDelay / 1e3}s)`);
+      usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 12e4, 9e5);
+      throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1e3}s)`);
     }
     if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
-    usageDelay = USAGE_DELAY_BASE;
+    usageBackoff = 0;
     const j = await res.json();
     if (!state.loggedRaw) {
       state.loggedRaw = true;
@@ -4279,6 +4311,7 @@ async function pollUsage() {
       fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt }));
     } catch {
     }
+    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% next=${nextUsageDelay() / 1e3}s`);
     scheduleResetPoll();
   } catch (e) {
     state.usageErr = String(e.message ?? e);
@@ -4649,6 +4682,7 @@ function render(context, kind) {
     case "usage-session": {
       if (state.usageErr && !state.usage) return setImage(context, gaugeKey("SESSION 5H", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.fiveHour;
+      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey(b.resetsAt, animPhase));
       return setImage(context, gaugeKey("SESSION 5H", b?.pct ?? null, b ? fmtReset(b.resetsAt) : "no data", b?.pct >= 90 ? animPhase : null));
     }
     case "usage-weekly": {
@@ -5019,7 +5053,21 @@ if (process.argv.includes("--selftest")) {
     const label = (x, y, s) => `<text x="${x}" y="${y}" font-family="Segoe UI, sans-serif" font-size="19" fill="#9b96a8">${s}</text>`;
     let inner = "", w, h;
     const tile = process.argv.includes("--rain") ? "activity" : argOf("--tile");
-    if (tile) {
+    if (process.argv.includes("--cap")) {
+      const now = Date.now();
+      const cases = [
+        ["2h 41m left", now + (2 * 3600 + 41 * 60 + 7) * 1e3],
+        ["47m left", now + (47 * 60 + 12) * 1e3],
+        ["38s left", now + 38e3],
+        ["past reset", now - 5e3]
+      ];
+      cases.forEach(([lbl, at], i) => {
+        inner += place(capKey(new Date(at).toISOString(), i), i * PITCH, 40);
+        inner += label(i * PITCH, 28, lbl);
+      });
+      w = cases.length * PITCH;
+      h = 40 + KEY;
+    } else if (tile) {
       await pollSessions();
       await pollBurn();
       const cols = Number(argOf("--cols") ?? 3), rows = Number(argOf("--rows") ?? 4);
@@ -5126,7 +5174,7 @@ if (process.argv.includes("--selftest")) {
     setTimeout(async () => {
       await pollUsage();
       usageLoop();
-    }, usageDelay);
+    }, nextUsageDelay());
   })();
   setInterval(pollSessions, 5e3);
   setInterval(pollToday, 3e5);
