@@ -5035,6 +5035,20 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
+    const savedUsage = state.usage;
+    log("selftest poll rate:");
+    for (const [name, pct, dt] of [
+      ["idle 12%", 12, 5 * 36e5],
+      ["warm 80%", 80, 3 * 36e5],
+      ["hot 97%", 97, 2 * 36e5],
+      ["capped, 90s to reset", 100, 9e4],
+      ["30s past reset", 100, -3e4],
+      ["10m past reset (bounded)", 100, -10 * 6e4]
+    ]) {
+      state.usage = { fiveHour: { pct, resetsAt: new Date(Date.now() + dt).toISOString() } };
+      log(`  ${name.padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
+    }
+    state.usage = savedUsage;
     const t0 = Date.now();
     await pollWeek();
     log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);

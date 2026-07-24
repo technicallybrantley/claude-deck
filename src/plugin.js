@@ -1398,6 +1398,23 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
+    // nextUsageDelay() is a pure function of state, so every band can be checked
+    // here instead of waiting to actually cap out to find a threshold typo.
+    const savedUsage = state.usage;
+    log("selftest poll rate:");
+    for (const [name, pct, dt] of [
+      ["idle 12%", 12, 5 * 3.6e6],
+      ["warm 80%", 80, 3 * 3.6e6],
+      ["hot 97%", 97, 2 * 3.6e6],
+      ["capped, 90s to reset", 100, 90_000],
+      ["30s past reset", 100, -30_000],
+      ["10m past reset (bounded)", 100, -10 * 60_000],
+    ]) {
+      state.usage = { fiveHour: { pct, resetsAt: new Date(Date.now() + dt).toISOString() } };
+      log(`  ${name.padEnd(26)} -> ${nextUsageDelay() / 1000}s`);
+    }
+    state.usage = savedUsage;
+
     const t0 = Date.now();
     await pollWeek();
     log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);
