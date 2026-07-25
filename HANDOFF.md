@@ -33,14 +33,44 @@ cycle. A 429 from the usage endpoint there is expected if you just hit it (the
 client backs off 240s), not a bug.
 
 That backoff has a sharp edge worth knowing: **blank usage gauges right after a
-deploy usually aren't a code bug.** `usage-cache.json` (the 30-minute warm-start
-reading) lives inside the installed folder, so a wipe-and-copy deploy used to
-delete it; if the first poll after the restart then 429'd, session/weekly/model
-sat on `--` for the whole backoff while the local keys kept working. `deploy.ps1`
-now carries that file across. Before debugging "the gauges broke", check
-`claude-deck.log` for a 429 and compare the cache timestamp — if a later poll
-wrote a good reading, it fixed itself. Rasterize a preview with
+deploy usually aren't a code bug.** `usage-cache.json` (the warm-start reading)
+lives inside the installed folder, so a wipe-and-copy deploy used to delete it;
+if the first poll after the restart then 429'd, session/weekly/model sat on `--`
+for the whole backoff while the local keys kept working. `deploy.ps1` now carries
+that file across. Before debugging "the gauges broke", check `claude-deck.log`
+for a 429 and compare the cache timestamp — if a later poll wrote a good reading,
+it fixed itself. Rasterize a preview with
 `chrome --headless --screenshot=out.png --window-size=1208,620 file:///...`.
+
+## Blank gauges after a *reboot* are the auth gap (fixed, don't reintroduce)
+
+Different failure from the deploy one above, same symptom. **Claude Code owns the
+OAuth refresh; this plugin only reads `~/.claude/.credentials.json`.** After the
+machine has been off, the stored `accessToken` is already expired, and it stays
+expired until Claude Code next launches — six minutes, in the case that prompted
+this. The old code sent the dead token anyway at the normal 90s rate, and the
+resulting run of 401s earned a **429 whose backoff escalated to the 15-minute
+cap**, so the gauges stayed blank long after the token was fine.
+
+Three invariants now hold, and all three matter:
+
+- **Never send a token known to be dead.** `readToken()` returns `{token,
+  expired}` from `expiresAt`, and `authDeadToken` remembers the exact token that
+  401'd. Both short-circuit before `fetch`, so at most *one* request is spent per
+  token rotation and no amount of waiting can earn a 429.
+- **`authWait` is separate state from `usageBackoff`.** An auth retry costs a
+  file read, not a request, so it polls at 15s and takes precedence — an auth
+  wait must never inherit a leftover 429 interval. Conversely `usageBackoff` is
+  cleared on any non-429 response, or one unrelated error pins the poller at
+  900s.
+- **A stale reading beats `--`.** The cache TTL is 12h (it exists to survive an
+  overnight reboot; the old 30 minutes rejected it exactly then), and
+  `usageStale()` labels anything over 4 minutes as "8m old" / "14h old" so a
+  cached number can't pass for live.
+
+Also: the no-reading sub-label is "auth refreshing…", **not "sign in?"**. The
+user is signed in; telling them otherwise sends them chasing a problem that
+resolves itself. `npm run selftest` exercises all of this headlessly.
 
 Runtime log: `%APPDATA%\Elgato\StreamDeck\Plugins\<plugin>\claude-deck.log`.
 Stream Deck's own log: `%APPDATA%\Elgato\StreamDeck\logs\StreamDeck.log`.

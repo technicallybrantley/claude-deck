@@ -4225,8 +4225,12 @@ var state = {
 };
 async function readToken() {
   const raw = await fsp.readFile(CREDS_FILE, "utf8");
-  const creds = JSON.parse(raw);
-  return creds?.claudeAiOauth?.accessToken ?? null;
+  const o = JSON.parse(raw)?.claudeAiOauth;
+  if (!o?.accessToken) return null;
+  return {
+    token: o.accessToken,
+    expired: typeof o.expiresAt === "number" && o.expiresAt <= Date.now()
+  };
 }
 function pickBucket(o) {
   if (!o || typeof o !== "object") return null;
@@ -4236,9 +4240,14 @@ function pickBucket(o) {
   return pct == null && !resetsAt ? null : { pct, resetsAt };
 }
 var USAGE_DELAY_BASE = 9e4;
+var AUTH_RETRY = 15e3;
 var usageBackoff = 0;
+var authWait = false;
+var authDeadToken = null;
 var lastUsageAttempt = 0;
+var lastUsageErrLogged = null;
 function nextUsageDelay() {
+  if (authWait) return AUTH_RETRY;
   if (usageBackoff) return usageBackoff;
   const b = state.usage?.fiveHour;
   const pct = b?.pct ?? 0;
@@ -4248,10 +4257,11 @@ function nextUsageDelay() {
   if (pct >= 75) return 45e3;
   return USAGE_DELAY_BASE;
 }
+var CACHE_TTL = 12 * 36e5;
 var CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
 try {
   const c = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
-  if (Date.now() - c.at < 30 * 6e4) {
+  if (Date.now() - c.at < CACHE_TTL) {
     state.usage = c.usage;
     state.usageAt = c.at;
   }
@@ -4260,21 +4270,30 @@ try {
 async function pollUsage() {
   lastUsageAttempt = Date.now();
   try {
-    const token = await readToken();
-    if (!token) throw new Error("no OAuth token in credentials file");
+    const cred = await readToken();
+    if (!cred) throw new Error("no OAuth token in credentials file", { cause: "auth" });
+    if (cred.expired) throw new Error("token expired \u2014 waiting for refresh", { cause: "auth" });
+    if (cred.token === authDeadToken) throw new Error("token rejected \u2014 waiting for refresh", { cause: "auth" });
     const res = await fetch(USAGE_URL, {
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${cred.token}`,
         "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json"
       }
     });
     if (res.status === 429) {
+      authWait = false;
       usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 12e4, 9e5);
       throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1e3}s)`);
     }
-    if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
+    if (res.status === 401 || res.status === 403) {
+      authDeadToken = cred.token;
+      throw new Error(`usage endpoint HTTP ${res.status} \u2014 waiting for refresh`, { cause: "auth" });
+    }
     usageBackoff = 0;
+    if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
+    authWait = false;
+    authDeadToken = null;
     const j = await res.json();
     if (!state.loggedRaw) {
       state.loggedRaw = true;
@@ -4305,6 +4324,7 @@ async function pollUsage() {
       models
     };
     state.usageErr = null;
+    lastUsageErrLogged = null;
     state.usageAt = Date.now();
     const fp5 = state.usage.fiveHour?.pct;
     if (typeof fp5 === "number") {
@@ -4318,8 +4338,12 @@ async function pollUsage() {
     log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% next=${nextUsageDelay() / 1e3}s`);
     scheduleResetPoll();
   } catch (e) {
+    authWait = e.cause === "auth";
     state.usageErr = String(e.message ?? e);
-    log("usage poll failed:", state.usageErr);
+    if (state.usageErr !== lastUsageErrLogged) {
+      lastUsageErrLogged = state.usageErr;
+      log("usage poll failed:", state.usageErr);
+    }
   }
   renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate"]);
 }
@@ -4681,21 +4705,35 @@ var showOk = (context) => send({ event: "showOk", context });
 var showAlert = (context) => send({ event: "showAlert", context });
 var switchProfile = (device, profile) => send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
 var kindOf = (action) => action.replace("com.technicallybrantley.claude-deck.", "");
+function usageErrSub() {
+  const e = state.usageErr ?? "";
+  if (e.includes("429")) return "throttled";
+  if (authWait) return "auth refreshing\u2026";
+  if (!state.usageErr) return "no data";
+  return "unavailable";
+}
+var USAGE_STALE_MS = 4 * 6e4;
+function usageStale() {
+  if (!state.usageAt) return null;
+  const age = Date.now() - state.usageAt;
+  if (age < USAGE_STALE_MS) return null;
+  return age < 36e5 ? `${Math.round(age / 6e4)}m old` : `${Math.round(age / 36e5)}h old`;
+}
 function render(context, kind) {
   switch (kind) {
     case "usage-session": {
-      if (state.usageErr && !state.usage) return setImage(context, gaugeKey("SESSION 5H", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.fiveHour;
-      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey("SESSION CAP", b.resetsAt, CAP_5H, animPhase));
-      return setImage(context, gaugeKey("SESSION 5H", b?.pct ?? null, b ? fmtReset(b.resetsAt) : "no data", b?.pct >= 90 ? animPhase : null));
+      if (!b) return setImage(context, gaugeKey("SESSION 5H", null, usageErrSub()));
+      if (b.pct >= 100 && b.resetsAt) return setImage(context, capKey("SESSION CAP", b.resetsAt, CAP_5H, animPhase));
+      return setImage(context, gaugeKey("SESSION 5H", b.pct ?? null, usageStale() ?? fmtReset(b.resetsAt), b.pct >= 90 ? animPhase : null));
     }
     case "usage-weekly": {
-      if (state.usageErr && !state.usage) return setImage(context, gaugeKey("WEEKLY", null, state.usageErr.includes("429") ? "throttled" : "sign in?"));
       const b = state.usage?.weekly;
-      if (b?.pct >= 100 && b.resetsAt) return setImage(context, capKey("WEEKLY CAP", b.resetsAt, CAP_7D, animPhase));
+      if (!b) return setImage(context, gaugeKey("WEEKLY", null, usageErrSub()));
+      if (b.pct >= 100 && b.resetsAt) return setImage(context, capKey("WEEKLY CAP", b.resetsAt, CAP_7D, animPhase));
       const u = state.usage;
-      const sub = u?.scopedPct != null && u.scopedName ? `${u.scopedName} ${Math.round(u.scopedPct)}%` : u?.weeklyOpus?.pct != null ? `opus ${Math.round(u.weeklyOpus.pct)}%` : b ? fmtReset(b.resetsAt) : "no data";
-      return setImage(context, gaugeKey("WEEKLY", b?.pct ?? null, sub, b?.pct >= 90 ? animPhase : null));
+      const sub = usageStale() ?? (u?.scopedPct != null && u.scopedName ? `${u.scopedName} ${Math.round(u.scopedPct)}%` : u?.weeklyOpus?.pct != null ? `opus ${Math.round(u.weeklyOpus.pct)}%` : fmtReset(b.resetsAt));
+      return setImage(context, gaugeKey("WEEKLY", b.pct ?? null, sub, b.pct >= 90 ? animPhase : null));
     }
     case "usage-model": {
       const models = state.usage?.models ?? [];
@@ -4703,7 +4741,8 @@ function render(context, kind) {
       const m = models.find((x) => x.name === want) ?? models[0];
       const name = (m?.name ?? want ?? "MODEL").toUpperCase().slice(0, 8);
       if (m?.pct >= 100 && m.resetsAt) return setImage(context, capKey(`${name} CAP`, m.resetsAt, CAP_7D, animPhase));
-      return setImage(context, gaugeKey(`${name} 7D`, m?.pct ?? null, m?.resetsAt ? fmtReset(m.resetsAt) : "no data", m?.pct >= 90 ? animPhase : null));
+      if (!m) return setImage(context, gaugeKey(`${name} 7D`, null, usageErrSub()));
+      return setImage(context, gaugeKey(`${name} 7D`, m.pct ?? null, usageStale() ?? (m.resetsAt ? fmtReset(m.resetsAt) : "no data"), m.pct >= 90 ? animPhase : null));
     }
     case "burn-rate":
       return setImage(context, burnKey(state.burn?.tokensHour ?? null, sessionEta()));
@@ -5055,6 +5094,22 @@ if (process.argv.includes("--selftest")) {
       log(`  ${name.padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
     }
     state.usage = savedUsage;
+    const [savedBackoff, savedWait] = [usageBackoff, authWait];
+    log("selftest auth handling:");
+    usageBackoff = 9e5;
+    authWait = true;
+    log(`  ${"auth wait beats 429 backoff".padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
+    authWait = false;
+    log(`  ${"429 backoff alone".padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
+    usageBackoff = savedBackoff;
+    authWait = savedWait;
+    const savedAt = state.usageAt;
+    log("selftest stale label:");
+    for (const [name, age] of [["fresh 30s", 3e4], ["8 min", 8 * 6e4], ["overnight 14h", 14 * 36e5]]) {
+      state.usageAt = Date.now() - age;
+      log(`  ${name.padEnd(26)} -> ${usageStale() ?? "(live, no label)"}`);
+    }
+    state.usageAt = savedAt;
     const t0 = Date.now();
     await pollWeek();
     log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);
