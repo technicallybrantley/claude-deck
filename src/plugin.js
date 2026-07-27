@@ -1348,10 +1348,13 @@ const smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
 const sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
 const sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
 const sprPos = (sim) => {
-  const e = smoother(sim.t);
+  // The vertical axis follows the ride's own curve — a slide accelerates, a
+  // balloon eases off — while the horizontal stays smooth either way.
+  const ex = smoother(sim.t);
+  const ey = sim.style ? SPR_STYLE[sim.style].ease(sim.t) : ex;
   return [
-    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * e,
-    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * e,
+    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * ex,
+    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * ey,
   ];
 };
 // Legs move only while actually hopping; flapping them at rest is a treadmill.
@@ -1367,12 +1370,52 @@ function sprAim(sim) {
     if (c < 0 || c >= sim.cols) { sim.dir *= -1; c = sim.col + sim.dir; }
     if (c >= 0 && c < sim.cols) { sim.tcol = c; sim.trow = sim.row; return true; }
   }
-  const up = Math.random() < 0.5 ? 1 : -1;
-  for (const d of [up, -up]) {
+  const first = Math.random() < 0.5 ? 1 : -1;
+  for (const d of [first, -first]) {
     const r = sim.row + d;
-    if (r >= 0 && r < sim.rows) { sim.trow = r; sim.tcol = sim.col; return true; }
+    if (r < 0 || r >= sim.rows) continue;
+    sim.trow = r; sim.tcol = sim.col;
+    const opts = d < 0 ? SPR_UP : SPR_DOWN;
+    sim.style = Math.random() < 0.58 ? opts[Math.floor(Math.random() * opts.length)] : null;
+    // A slide runs diagonally when there's a column to land in — that's what
+    // makes it read as a slide rather than as falling down a hole. The landing
+    // is still a real key, so the rest-on-a-key invariant is untouched.
+    if (sim.style === "slide") {
+      const c = sim.col + sim.dir;
+      if (c >= 0 && c < sim.cols) sim.tcol = c;
+    }
+    return true;
   }
   return false;
+}
+
+// The ladder / slide / balloon / parachute itself. Drawn before the sprite so he
+// rides on top of it, and in canvas-relative Y so both keys the ride spans draw
+// their own slice of it — the viewBox clips the rest.
+function sprRideArt(sim, x, y0, sw, sh, ox, lr) {
+  const s = sim.style;
+  if (!s || sim.t === 0) return "";
+  const homeY = (r) => sprHomeY(r) - lr * KEY;
+  const yTop = Math.min(homeY(sim.row), homeY(sim.trow));
+  const yBot = Math.max(homeY(sim.row), homeY(sim.trow)) + sh;
+  const cxS = sprHomeX(sim.col) + sw / 2 - ox, cxT = sprHomeX(sim.tcol) + sw / 2 - ox;
+  const F = (n) => n.toFixed(1);
+  if (s === "ladder") {
+    const w = 30;
+    let out = `<rect x="${F(cxS - w / 2)}" y="${F(yTop - 10)}" width="4" height="${F(yBot - yTop + 10)}" fill="${C.track}"/>`
+            + `<rect x="${F(cxS + w / 2 - 4)}" y="${F(yTop - 10)}" width="4" height="${F(yBot - yTop + 10)}" fill="${C.track}"/>`;
+    for (let ry = yTop - 4; ry < yBot; ry += 15)
+      out += `<rect x="${F(cxS - w / 2)}" y="${F(ry)}" width="${w}" height="4" fill="${C.track}"/>`;
+    return out;
+  }
+  if (s === "slide") {
+    const t1 = yTop + sh * 0.45, t2 = yBot - sh * 0.15;
+    return `<polygon points="${F(cxS - 17)},${F(t1)} ${F(cxS + 17)},${F(t1)} ${F(cxT + 17)},${F(t2)} ${F(cxT - 17)},${F(t2)}" fill="${C.track}"/>`;
+  }
+  // Balloon and parachute ride with him rather than being fixed to the block.
+  if (s === "balloon") return sprDraw(ACT_ART.balloon, x + sw / 2 - 12, y0 - 40, 6, 6, ox, C.bad);
+  if (s === "chute") return sprDraw(ACT_ART.chute, x + sw / 2 - 54, y0 - 30, 9, 9, ox, C.ok);
+  return "";
 }
 
 // Idle business. Parked on a key he'll occasionally fish out something to play
@@ -1384,7 +1427,25 @@ const ACT_ART = {
   excl:  ["##", "##", "##", "  ", "##"],
   ball:  [" ## ", "####", "####", " ## "],
   bubble:[" ## ", "#  #", "#  #", " ## "],
+  balloon:[" ## ", "####", "####", " ## ", "  # ", " #  "],
+  // Wider than he is, or it reads as a hat rather than a canopy. Three rows
+  // only: there are just ~32px of headroom above him inside a key.
+  chute: ["  ########  ",
+          "############",
+          " #        # "],
 };
+
+// Changing floors is worth some theatre. A plain hop stays the most common way
+// between rows — these fire a little over half the time, so they still register
+// as a surprise rather than a routine. `up` picks which list a move draws from.
+const SPR_STYLE = {
+  ladder:  { up: true,  speed: 0.42, ease: (u) => u },                        // steady climb
+  balloon: { up: true,  speed: 0.34, ease: (u) => 1 - (1 - u) * (1 - u) },    // floats, easing off
+  slide:   { up: false, speed: 1.55, ease: (u) => u * u },                    // accelerates
+  chute:   { up: false, speed: 0.48, ease: (u) => u },                        // drifts down
+};
+const SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
+const SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
 // Ticks, at TILE_SPEC.scuttle.ms (140ms) each.
 const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
 const SPR_ACTS = Object.keys(ACT_LEN);
@@ -1409,9 +1470,14 @@ function scuttleStep(sim, busy) {
     return;
   }
   if (sim.t > 0) {
-    // Mid-hop: finish it. Faster when there's more work going through.
-    sim.t = Math.min(1, sim.t + 0.10 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 0.006));
-    if (sim.t >= 1) { sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.rest = 4 + Math.floor(Math.random() * 12); }
+    // Mid-hop: finish it. Faster when there's more work going through, and
+    // scaled by the ride — a slide is over quickly, a climb is not.
+    const rate = 0.10 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 0.006);
+    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1));
+    if (sim.t >= 1) {
+      sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null;
+      sim.rest = 4 + Math.floor(Math.random() * 12);
+    }
     return;
   }
   // Standing on a key. Pause a beat, then pick somewhere to go.
@@ -1458,7 +1524,7 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   // mid-jump and sleeps in the air.
   if (!walking) {
     if (sim.t > 0.5) { sim.col = sim.tcol; sim.row = sim.trow; }
-    sim.tcol = sim.col; sim.trow = sim.row; sim.t = 0; sim.act = null;
+    sim.tcol = sim.col; sim.trow = sim.row; sim.t = 0; sim.act = null; sim.style = null;
   }
   const [x, ry] = sprPos(sim);
   const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
@@ -1473,7 +1539,9 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   let agent = SPRITE.agent;
   const facing = sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
   if (facing < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
-  let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  // Ride first, so he climbs the ladder rather than the ladder covering him.
+  let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
+  out += sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   // SDK agents trail behind in the smaller pose. pollSessions() already counts
   // them separately from the sessions the user can actually see.
@@ -1515,7 +1583,7 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
   } else if (kind === "scuttle") {
-    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1,
+    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1, style: null,
           phase: 0, cols, rows, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
@@ -1866,6 +1934,19 @@ if (process.argv.includes("--selftest")) {
       // in a preview is hopeless: `--act ball` pins it and walks the act's own
       // clock forward across the strip instead.
       const forceAct = argOf("--act");
+      // Same problem for the between-row rides: `--style ladder` sets up the
+      // move and lets the strip watch it play out.
+      const forceStyle = argOf("--style");
+      if (forceStyle && SPR_STYLE[forceStyle]) {
+        const up = SPR_STYLE[forceStyle].up;
+        sim.row = up ? rows - 1 : 0;
+        sim.trow = up ? Math.max(0, rows - 2) : Math.min(rows - 1, 1);
+        sim.col = sim.tcol = 0;
+        if (forceStyle === "slide" && cols > 1) sim.tcol = 1;
+        sim.style = forceStyle;
+        sim.t = 0.001;
+        sim.actNext = 1e9;   // don't let a random bit of business interrupt it
+      }
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
         if (forceAct && t >= 0) { sim.act = forceAct; sim.actT = Math.min(k * 2, (ACT_LEN[forceAct] ?? 20) - 1); }

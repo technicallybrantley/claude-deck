@@ -4915,10 +4915,11 @@ var smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
 var sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
 var sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
 var sprPos = (sim) => {
-  const e = smoother(sim.t);
+  const ex = smoother(sim.t);
+  const ey = sim.style ? SPR_STYLE[sim.style].ease(sim.t) : ex;
   return [
-    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * e,
-    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * e
+    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * ex,
+    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * ey
   ];
 };
 var sprStepping = (sim) => sim.t > 0 || sim.cols < 2 && sim.rows < 2;
@@ -4935,23 +4936,71 @@ function sprAim(sim) {
       return true;
     }
   }
-  const up = Math.random() < 0.5 ? 1 : -1;
-  for (const d of [up, -up]) {
+  const first = Math.random() < 0.5 ? 1 : -1;
+  for (const d of [first, -first]) {
     const r = sim.row + d;
-    if (r >= 0 && r < sim.rows) {
-      sim.trow = r;
-      sim.tcol = sim.col;
-      return true;
+    if (r < 0 || r >= sim.rows) continue;
+    sim.trow = r;
+    sim.tcol = sim.col;
+    const opts = d < 0 ? SPR_UP : SPR_DOWN;
+    sim.style = Math.random() < 0.58 ? opts[Math.floor(Math.random() * opts.length)] : null;
+    if (sim.style === "slide") {
+      const c = sim.col + sim.dir;
+      if (c >= 0 && c < sim.cols) sim.tcol = c;
     }
+    return true;
   }
   return false;
+}
+function sprRideArt(sim, x, y0, sw, sh, ox, lr) {
+  const s = sim.style;
+  if (!s || sim.t === 0) return "";
+  const homeY = (r) => sprHomeY(r) - lr * KEY;
+  const yTop = Math.min(homeY(sim.row), homeY(sim.trow));
+  const yBot = Math.max(homeY(sim.row), homeY(sim.trow)) + sh;
+  const cxS = sprHomeX(sim.col) + sw / 2 - ox, cxT = sprHomeX(sim.tcol) + sw / 2 - ox;
+  const F = (n) => n.toFixed(1);
+  if (s === "ladder") {
+    const w = 30;
+    let out = `<rect x="${F(cxS - w / 2)}" y="${F(yTop - 10)}" width="4" height="${F(yBot - yTop + 10)}" fill="${C.track}"/><rect x="${F(cxS + w / 2 - 4)}" y="${F(yTop - 10)}" width="4" height="${F(yBot - yTop + 10)}" fill="${C.track}"/>`;
+    for (let ry = yTop - 4; ry < yBot; ry += 15)
+      out += `<rect x="${F(cxS - w / 2)}" y="${F(ry)}" width="${w}" height="4" fill="${C.track}"/>`;
+    return out;
+  }
+  if (s === "slide") {
+    const t1 = yTop + sh * 0.45, t2 = yBot - sh * 0.15;
+    return `<polygon points="${F(cxS - 17)},${F(t1)} ${F(cxS + 17)},${F(t1)} ${F(cxT + 17)},${F(t2)} ${F(cxT - 17)},${F(t2)}" fill="${C.track}"/>`;
+  }
+  if (s === "balloon") return sprDraw(ACT_ART.balloon, x + sw / 2 - 12, y0 - 40, 6, 6, ox, C.bad);
+  if (s === "chute") return sprDraw(ACT_ART.chute, x + sw / 2 - 54, y0 - 30, 9, 9, ox, C.ok);
+  return "";
 }
 var ACT_ART = {
   heart: [" # # ", "#####", "#####", " ### ", "  #  "],
   excl: ["##", "##", "##", "  ", "##"],
   ball: [" ## ", "####", "####", " ## "],
-  bubble: [" ## ", "#  #", "#  #", " ## "]
+  bubble: [" ## ", "#  #", "#  #", " ## "],
+  balloon: [" ## ", "####", "####", " ## ", "  # ", " #  "],
+  // Wider than he is, or it reads as a hat rather than a canopy. Three rows
+  // only: there are just ~32px of headroom above him inside a key.
+  chute: [
+    "  ########  ",
+    "############",
+    " #        # "
+  ]
 };
+var SPR_STYLE = {
+  ladder: { up: true, speed: 0.42, ease: (u) => u },
+  // steady climb
+  balloon: { up: true, speed: 0.34, ease: (u) => 1 - (1 - u) * (1 - u) },
+  // floats, easing off
+  slide: { up: false, speed: 1.55, ease: (u) => u * u },
+  // accelerates
+  chute: { up: false, speed: 0.48, ease: (u) => u }
+  // drifts down
+};
+var SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
+var SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
 var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
 var SPR_ACTS = Object.keys(ACT_LEN);
 var rollAct = () => 40 + Math.floor(Math.random() * 120);
@@ -4972,11 +5021,13 @@ function scuttleStep(sim, busy) {
     return;
   }
   if (sim.t > 0) {
-    sim.t = Math.min(1, sim.t + 0.1 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 6e-3));
+    const rate = 0.1 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 6e-3);
+    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1));
     if (sim.t >= 1) {
       sim.col = sim.tcol;
       sim.row = sim.trow;
       sim.t = 0;
+      sim.style = null;
       sim.rest = 4 + Math.floor(Math.random() * 12);
     }
     return;
@@ -5013,6 +5064,7 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
     sim.trow = sim.row;
     sim.t = 0;
     sim.act = null;
+    sim.style = null;
   }
   const [x, ry] = sprPos(sim);
   const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
@@ -5026,7 +5078,8 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
     pose = sprFlip(pose);
     agent = sprFlip(agent);
   }
-  let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
+  out += sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
     const ax = x - sim.dir * (sw * 0.5 + i * 40);
@@ -5067,6 +5120,7 @@ function simFor(kind, key, cols, rows) {
       t: 0,
       rest: 1,
       dir: 1,
+      style: null,
       phase: 0,
       cols,
       rows,
@@ -5398,6 +5452,17 @@ if (process.argv.includes("--selftest")) {
       const blockW = cols * PITCH;
       const perFrame = Math.max(1, Math.round(400 / (TILE_SPEC[tile]?.ms ?? 140)));
       const forceAct = argOf("--act");
+      const forceStyle = argOf("--style");
+      if (forceStyle && SPR_STYLE[forceStyle]) {
+        const up = SPR_STYLE[forceStyle].up;
+        sim.row = up ? rows - 1 : 0;
+        sim.trow = up ? Math.max(0, rows - 2) : Math.min(rows - 1, 1);
+        sim.col = sim.tcol = 0;
+        if (forceStyle === "slide" && cols > 1) sim.tcol = 1;
+        sim.style = forceStyle;
+        sim.t = 1e-3;
+        sim.actNext = 1e9;
+      }
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
         if (forceAct && t >= 0) {

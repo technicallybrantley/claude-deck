@@ -176,8 +176,21 @@ Per-tile things that will bite:
   Its idle business (`ACT_LEN` / `sprActArt`) only ever starts while parked, and
   holds it still until done. Props go in the **headroom above** and in a
   contrasting colour — there's no room beside a 132px creature in a 144px key,
-  and a body-coloured prop just reads as part of it. `--act <name>` forces one
-  for previewing, since they otherwise fire at random.
+  and a body-coloured prop just reads as part of it. Only ~32px of headroom
+  exists inside a key, which is what caps how tall a prop can be.
+
+  Row changes pick a ride from `SPR_STYLE` about 58% of the time — ladder or
+  balloon going up, slide or parachute coming down — and a plain hop otherwise,
+  so the ridden ones stay a surprise. Each carries its own speed and vertical
+  easing (a slide accelerates and is over fast, a climb is slow and linear).
+  Ladders and slides are drawn in **canvas-relative Y** so both keys the ride
+  spans draw their own slice; balloon and parachute ride with him instead. The
+  ride is emitted *before* the sprite or the ladder covers him. A slide retargets
+  a diagonal column when there's one in bounds — the landing is still a real key,
+  so the invariant above is untouched.
+
+  `--act <name>` and `--style <name>` force one for previewing, since both
+  otherwise fire at random and won't show up in a short strip.
 
 `--preview` advances each tile by *its own* `TILE_SPEC.ms`, not a fixed step
 count. Don't "simplify" that back: a fixed count animates something the deck
