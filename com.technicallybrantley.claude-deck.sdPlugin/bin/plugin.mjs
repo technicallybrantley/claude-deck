@@ -5329,8 +5329,7 @@ function onKeyDown(context, kind, device) {
       if (!sim) return showAlert(context);
       scuttleWake = Date.now() + 8e3;
       log(`scuttle: poked -> ${scuttleReact(sim)}`);
-      renderTiles("scuttle", false);
-      return showOk(context);
+      return renderTiles("scuttle", false);
     }
     case "chart-open": {
       if (!device) return showAlert(context);

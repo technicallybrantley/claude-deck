@@ -1796,8 +1796,11 @@ function onKeyDown(context, kind, device) {
       if (!sim) return showAlert(context);
       scuttleWake = Date.now() + 8000;
       log(`scuttle: poked -> ${scuttleReact(sim)}`);
-      renderTiles("scuttle", false);   // respond on this frame, not the next tick
-      return showOk(context);
+      // No showOk here: the reaction *is* the acknowledgement, and Stream Deck's
+      // green tick covers the whole key for about a second — hiding exactly the
+      // thing the press just started. showAlert above stays, because a press
+      // that found no sim has nothing else to show for itself.
+      return renderTiles("scuttle", false);   // respond on this frame, not the next tick
     }
     case "chart-open": {
       if (!device) return showAlert(context);
