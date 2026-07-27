@@ -33,5 +33,14 @@ if (Test-Path $logo) {
     Write-Host "applied local claude-logo.png to launch + category icons"
 }
 
+# Same idea for the Scuttle tile: the sprite shipped in the repo is original art,
+# but local-assets\sprite.json (not in the repo) replaces it in the deployed copy
+# only — so artwork you hold a personal-use licence for never has to be published.
+$sprite = Join-Path $PSScriptRoot "local-assets\sprite.json"
+if (Test-Path $sprite) {
+    Copy-Item $sprite (Join-Path $dst "sprite.json") -Force
+    Write-Host "applied local sprite.json to the Scuttle tile"
+}
+
 if (-not $NoRestart) { Start-Process "C:\Program Files\Elgato\StreamDeck\StreamDeck.exe" }
 Write-Host "deployed to $dst"

@@ -4827,21 +4827,152 @@ function chartCell(column, row) {
 function renderAll(kinds) {
   for (const [context, v] of views) if (kinds.includes(v.kind)) render(context, v.kind);
 }
-var TILE_KINDS = ["activity", "term", "life", "history", "pipes"];
+var TILE_KINDS = ["activity", "term", "life", "history", "pipes", "scuttle"];
 var TILE_SPEC = {
   activity: { ms: 110, idleMs: 0 },
   pipes: { ms: 130, idleMs: 0 },
   life: { ms: 220, idleMs: 0 },
   term: { ms: 120, idleMs: 260 },
   // keeps typing/blinking even when quiet
-  history: { ms: 400, idleMs: 1200 }
+  history: { ms: 400, idleMs: 1200 },
   // the graph should keep scrolling
+  scuttle: { ms: 140, idleMs: 0 }
+  // walks while Claude works, then naps
 };
 var tilesT0 = Date.now();
 var tilesPaused = false;
 var tileRunning = /* @__PURE__ */ new Set();
 var tileLast = /* @__PURE__ */ new Map();
 var sims = /* @__PURE__ */ new Map();
+var SPR_PX = 12;
+var SPR_PY = 16;
+var SPRITE_DEFAULT = {
+  body: C.accent,
+  //         0123456789A
+  walkA: [
+    "  #     #  ",
+    "  #######  ",
+    " ##=###=## ",
+    " ######### ",
+    "# #  #  # #"
+  ],
+  walkB: [
+    " #       # ",
+    "  #######  ",
+    " ##=###=## ",
+    " ######### ",
+    " ## # # ## "
+  ],
+  // Eyes closed (no '=' notches), antennae down, legs tucked: the single frame
+  // held while nothing is running.
+  sleep: [
+    "   #   #   ",
+    "  #######  ",
+    " ######### ",
+    " ######### ",
+    "  ##   ##  "
+  ],
+  agent: [
+    "  #  ",
+    " ### ",
+    " # # "
+  ]
+};
+var SPRITE = SPRITE_DEFAULT;
+try {
+  const s = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, "sprite.json"), "utf8"));
+  const rows = (a) => Array.isArray(a) && a.length && a.every((r) => typeof r === "string");
+  if (["walkA", "walkB", "sleep"].every((k) => rows(s[k]) && s[k].every((r) => r.length === s.walkA[0].length))) {
+    SPRITE = { ...SPRITE_DEFAULT, ...s };
+    log("sprite: local override loaded");
+  } else log("sprite: local override ignored (malformed)");
+} catch {
+}
+var sprW = () => SPRITE.walkA[0].length;
+var sprFlip = (rows) => rows.map((r) => [...r].reverse().map((c) => c === "(" ? ")" : c === ")" ? "(" : c).join(""));
+function sprDraw(rows, x0, y0, px, py, ox) {
+  const R = (rx, ry, rw, rh) => `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${SPRITE.body}"/>`;
+  x0 = Math.round(x0);
+  y0 = Math.round(y0);
+  let out = "";
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      const ch = rows[r][c];
+      if (ch === " ") continue;
+      const x = x0 + c * px - ox, y = y0 + r * py;
+      if (x > KEY + 1 || x + px < -1) continue;
+      const hx = px >> 1, hy = py >> 1;
+      if (ch === "#") out += R(x, y, px, py);
+      else if (ch === "=") out += R(x, y + hy, px, hy);
+      else if (ch === "(") out += R(x + hx, y + hy, hx, hy);
+      else if (ch === ")") out += R(x, y + hy, hx, hy);
+    }
+  }
+  return out;
+}
+var SPR_DWELL = 0.42;
+var smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
+var sprEase = (u) => {
+  const v = (u - SPR_DWELL) / (1 - 2 * SPR_DWELL);
+  return v <= 0 ? 0 : v >= 1 ? 1 : smoother(v);
+};
+var sprHome = (k) => k * KEY + (KEY - sprW() * SPR_PX) / 2;
+var sprX = (sim) => {
+  const k = Math.floor(sim.p);
+  return sprHome(k) + KEY * sprEase(sim.p - k);
+};
+var sprStepping = (sim) => {
+  if (sim.cols < 2) return true;
+  const u = sim.p - Math.floor(sim.p);
+  return u > SPR_DWELL && u < 1 - SPR_DWELL;
+};
+function scuttleStep(sim, busy) {
+  const burn = state.burn?.tokensHour ?? 0;
+  sim.phase++;
+  if (sim.cols < 2) return;
+  const speed = 0.02 + Math.min(0.055, burn / 16e7) + Math.min(0.02, busy * 4e-3);
+  sim.p += speed * sim.dir;
+  const last = sim.cols - 1;
+  if (sim.p >= last) {
+    sim.p = last;
+    sim.dir = -1;
+  } else if (sim.p <= 0) {
+    sim.p = 0;
+    sim.dir = 1;
+  }
+}
+function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
+  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX;
+  const walking = busy > 0;
+  const x = sprX(sim);
+  const stepping = walking && sprStepping(sim) && sim.phase % 2;
+  const bob = stepping ? -2 : 0;
+  const y0 = Math.round((H - SPRITE.walkA.length * SPR_PY) / 2) + bob - lr * KEY;
+  let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
+  let agent = SPRITE.agent;
+  if (sim.dir < 0) {
+    pose = sprFlip(pose);
+    agent = sprFlip(agent);
+  }
+  let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
+    const ax = x - sim.dir * (sw * 0.5 + i * 40);
+    out += sprDraw(agent, ax, y0 + SPR_PY * 2, 8, 12, ox);
+  }
+  if (!walking) {
+    const zx = x + (sim.dir > 0 ? sw - 6 : -14) - ox;
+    if (zx > -20 && zx < KEY + 20)
+      out += `<text x="${zx.toFixed(1)}" y="${(y0 + 6).toFixed(1)}" font-family="${MONO}" font-size="18" fill="${C.dim}">z</text>`;
+  }
+  const id = lc + "," + lr;
+  if (!out) {
+    if (!sim.painted.has(id)) return null;
+    sim.painted.delete(id);
+    return svgWrap("", false);
+  }
+  sim.painted.add(id);
+  return svgWrap(out, false);
+}
 function simFor(kind, key, cols, rows) {
   let s = sims.get(key);
   if (s) return s;
@@ -4854,6 +4985,8 @@ function simFor(kind, key, cols, rows) {
     s = { w: Math.max(3, Math.floor(W / PIPE_CELL)), h: Math.max(3, Math.floor(H / PIPE_CELL)), pipes: [], cells: 0, fade: 0 };
   } else if (kind === "history") {
     s = { bucketMs: 3e4 };
+  } else if (kind === "scuttle") {
+    s = { p: 0, dir: 1, phase: 0, cols, painted: /* @__PURE__ */ new Set() };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -4861,6 +4994,7 @@ function simFor(kind, key, cols, rows) {
 function tileStep(kind, sim, busy) {
   if (kind === "life") lifeStep(sim, busy);
   else if (kind === "pipes") pipeStep(sim, busy);
+  else if (kind === "scuttle") scuttleStep(sim, busy);
 }
 function tileCell(kind, lc, lr, cols, rows, t, sim, busy, burn) {
   switch (kind) {
@@ -4874,6 +5008,8 @@ function tileCell(kind, lc, lr, cols, rows, t, sim, busy, burn) {
       return historyCellKey(lc, lr, cols, rows, t, sim);
     case "pipes":
       return pipesCellKey(lc, lr, cols, rows, t, sim);
+    case "scuttle":
+      return scuttleCellKey(lc, lr, cols, rows, t, sim, busy);
   }
 }
 function renderTiles(kind, step) {
@@ -5154,14 +5290,18 @@ if (process.argv.includes("--selftest")) {
         l.t = Date.now() - (state.log.length - i) * 380;
       });
       const sim = simFor(tile, `preview|${tile}|${cols}x${rows}`, cols, rows);
-      const frames = [0, 400, 800, -1];
+      const nf = Math.max(1, Number(argOf("--frames") ?? 3));
+      const frames = [...Array(nf)].map((_, i) => i * 400).concat([-1]);
       const blockW = cols * PITCH;
+      const perFrame = Math.max(1, Math.round(400 / (TILE_SPEC[tile]?.ms ?? 140)));
       frames.forEach((t, k) => {
-        if (k > 0 && t >= 0) for (let i = 0; i < 6; i++) tileStep(tile, sim, busy);
+        if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
         const x0 = k * (blockW + 34);
         for (let c = 0; c < cols; c++)
-          for (let r = 0; r < rows; r++)
-            inner += place(tileCell(tile, c, r, cols, rows, Math.max(0, t), sim, t < 0 ? 0 : busy, burn), x0 + c * PITCH, 40 + r * PITCH);
+          for (let r = 0; r < rows; r++) {
+            const img = tileCell(tile, c, r, cols, rows, Math.max(0, t), sim, t < 0 ? 0 : busy, burn);
+            inner += place(img ?? svgWrap("", false), x0 + c * PITCH, 40 + r * PITCH);
+          }
         inner += label(x0, 28, t < 0 ? "at rest (nothing busy)" : `${tile} \u2014 t = ${t}ms`);
       });
       w = frames.length * (blockW + 34) - 34;

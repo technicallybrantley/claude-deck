@@ -121,7 +121,8 @@ The plugin speaks the Stream Deck WebSocket protocol directly — the only runti
 
 ## Notes
 
-- Not affiliated with or endorsed by Anthropic. The spark icons are original artwork drawn in a similar spirit; official Anthropic/Claude logos are trademarks and are not included.
+- Not affiliated with or endorsed by Anthropic. The spark icons and the Scuttle critter are original artwork drawn in a similar spirit; official Anthropic/Claude logos, mascots, and other trademarks are not included.
+- The Scuttle sprite is loaded from data, so you can swap in your own: drop a `sprite.json` next to the installed plugin (or `local-assets/sprite.json` before running `deploy.ps1`) with `walkA` / `walkB` / `sleep` rows, an optional `agent` pose, and a `body` colour. Rows are a character grid — `#` a full cell, `=` a lower half cell, `(` / `)` quarter cells — and every row of every pose must be the same width. Please only use artwork you have the rights to.
 - Usage percentages are account-wide, so desktop app, claude.ai, and Claude Code usage all show up in the gauges.
 
 ## License

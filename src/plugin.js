@@ -1225,7 +1225,7 @@ function renderAll(kinds) {
 // Every key of a tile is redrawn together: they share one canvas, and adding or
 // removing a key changes the bounding box for all of them. Grouped by device so
 // two blocks on two decks don't get merged into one oversized canvas.
-const TILE_KINDS = ["activity", "term", "life", "history", "pipes"];
+const TILE_KINDS = ["activity", "term", "life", "history", "pipes", "scuttle"];
 // ms = frame interval while a session is working. idleMs 0 means freeze at rest:
 // push one final calm frame and then stop sending until work resumes.
 const TILE_SPEC = {
@@ -1234,12 +1234,183 @@ const TILE_SPEC = {
   life:     { ms: 220, idleMs: 0 },
   term:     { ms: 120, idleMs: 260 },   // keeps typing/blinking even when quiet
   history:  { ms: 400, idleMs: 1200 },  // the graph should keep scrolling
+  scuttle:  { ms: 140, idleMs: 0 },     // walks while Claude works, then naps
 };
 let tilesT0 = Date.now();
 let tilesPaused = false;
 const tileRunning = new Set();
 const tileLast = new Map();
 const sims = new Map();   // per block+size simulation state (Life board, pipe paths)
+
+// ---------- tile: Scuttle ----------
+// A pixel critter that walks the block while Claude is working. Sprites are a
+// character grid: '#' a full cell, '=' a lower-half cell (the dark top edge
+// reads as an eye), '(' / ')' the lower-right / lower-left quarter cells.
+//
+// The art below is original, and deliberately *data* rather than drawing code.
+// Third-party mascot artwork doesn't belong in this repo — same call the README
+// already makes about the Claude logo — but a sprite you hold a personal-use
+// licence for can be dropped in as local-assets/sprite.json, which deploy.ps1
+// copies into the installed folder and which replaces this at load time. Any
+// grid works; the walk geometry reads its width off the rows.
+const SPR_PX = 12, SPR_PY = 16;   // even numbers only — halves must land on whole pixels
+const SPRITE_DEFAULT = {
+  body: C.accent,
+  //         0123456789A
+  walkA: ["  #     #  ",
+          "  #######  ",
+          " ##=###=## ",
+          " ######### ",
+          "# #  #  # #"],
+  walkB: [" #       # ",
+          "  #######  ",
+          " ##=###=## ",
+          " ######### ",
+          " ## # # ## "],
+  // Eyes closed (no '=' notches), antennae down, legs tucked: the single frame
+  // held while nothing is running.
+  sleep: ["   #   #   ",
+          "  #######  ",
+          " ######### ",
+          " ######### ",
+          "  ##   ##  "],
+  agent: ["  #  ",
+          " ### ",
+          " # # "],
+};
+let SPRITE = SPRITE_DEFAULT;
+try {
+  const s = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, "sprite.json"), "utf8"));
+  const rows = (a) => Array.isArray(a) && a.length && a.every((r) => typeof r === "string");
+  // Every pose must be present and rectangular, or a half-valid file would draw
+  // a creature with a missing frame rather than falling back cleanly.
+  if (["walkA", "walkB", "sleep"].every((k) => rows(s[k]) && s[k].every((r) => r.length === s.walkA[0].length))) {
+    SPRITE = { ...SPRITE_DEFAULT, ...s };
+    log("sprite: local override loaded");
+  } else log("sprite: local override ignored (malformed)");
+} catch {}
+const sprW = () => SPRITE.walkA[0].length;
+
+// Mirrored so it faces the way it is walking. Reversing a row also has to swap
+// which quarter cell each corner glyph is, or they point the wrong way.
+const sprFlip = (rows) => rows.map((r) =>
+  [...r].reverse().map((c) => (c === "(" ? ")" : c === ")" ? "(" : c)).join(""));
+
+// Emits only the cells landing on this key; without the cull every key in the
+// block would carry the whole sprite.
+function sprDraw(rows, x0, y0, px, py, ox) {
+  const R = (rx, ry, rw, rh) =>
+    `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${SPRITE.body}"/>`;
+  // Snapped to whole pixels. Neighbouring cells share an edge, and on fractional
+  // coordinates the renderer antialiases both sides of that seam — which draws a
+  // hairline grid straight through him wherever he isn't key-aligned.
+  x0 = Math.round(x0); y0 = Math.round(y0);
+  let out = "";
+  for (let r = 0; r < rows.length; r++) {
+    for (let c = 0; c < rows[r].length; c++) {
+      const ch = rows[r][c];
+      if (ch === " ") continue;
+      const x = x0 + c * px - ox, y = y0 + r * py;
+      if (x > KEY + 1 || x + px < -1) continue;
+      const hx = px >> 1, hy = py >> 1;
+      if (ch === "#") out += R(x, y, px, py);
+      else if (ch === "=") out += R(x, y + hy, px, hy);
+      else if (ch === "(") out += R(x + hx, y + hy, hx, hy);
+      else if (ch === ")") out += R(x, y + hy, hx, hy);
+    }
+  }
+  return out;
+}
+
+// He travels in key units, not pixels. A sprite halfway across the physical gap
+// gets sliced into two pieces that read as two small animals rather than one
+// bisected creature — same reason the terminal tile quantizes to the key grid.
+// Easing hard at both ends of each step keeps him whole and centred for most of
+// the cycle and darts him across the gap, which is how a crab moves anyway.
+// Easing alone isn't enough — it only reshapes where he is per tick, so he still
+// spends ~28% of each step visibly split. Standing still at both ends of the
+// step and darting across the middle is what actually fixes it, and it reads
+// better besides: pause, scuttle, pause is what the animal does.
+//
+// At 11 cells it is 132px wide in a 144px key, so *any* off-centre position
+// slices it into what looks like two small animals; the only real lever is how
+// little time it spends there. At 0.42 the dart is 16% of each key-step
+// (~0.27s), and `npm run preview -- --tile scuttle --frames 8` catches it
+// mid-gap in roughly one frame of five. Lowering this makes the walk smoother
+// and the creature more often cut in half.
+const SPR_DWELL = 0.42;
+const smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
+const sprEase = (u) => {
+  const v = (u - SPR_DWELL) / (1 - 2 * SPR_DWELL);
+  return v <= 0 ? 0 : v >= 1 ? 1 : smoother(v);
+};
+const sprHome = (k) => k * KEY + (KEY - sprW() * SPR_PX) / 2;
+const sprX = (sim) => {
+  const k = Math.floor(sim.p);
+  return sprHome(k) + KEY * sprEase(sim.p - k);
+};
+// Legs move only while it is actually crossing; flapping them during the dwell
+// looks like a treadmill. A one-key block has nowhere to go, so it marches.
+const sprStepping = (sim) => {
+  if (sim.cols < 2) return true;
+  const u = sim.p - Math.floor(sim.p);
+  return u > SPR_DWELL && u < 1 - SPR_DWELL;
+};
+
+function scuttleStep(sim, busy) {
+  // The same telemetry the rain tile reads: how fast it scuttles is the burn
+  // rate, and more sessions working hurry it along.
+  const burn = state.burn?.tokensHour ?? 0;
+  sim.phase++;
+  // One key wide is a legitimate placement — it just marches on the spot.
+  // Bouncing with no room would flip its facing every single frame.
+  if (sim.cols < 2) return;
+  const speed = 0.020 + Math.min(0.055, burn / 1.6e8) + Math.min(0.02, busy * 0.004);
+  sim.p += speed * sim.dir;
+  const last = sim.cols - 1;
+  // Bounce rather than wrap: wrapping spends half the cycle off-canvas, which
+  // on a short block reads as it having vanished.
+  if (sim.p >= last) { sim.p = last; sim.dir = -1; }
+  else if (sim.p <= 0) { sim.p = 0; sim.dir = 1; }
+}
+
+function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
+  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX;
+  const walking = busy > 0;
+  const x = sprX(sim);
+  const stepping = walking && sprStepping(sim) && sim.phase % 2;
+  const bob = stepping ? -2 : 0;   // half-step lift, so it isn't gliding
+  const y0 = Math.round((H - SPRITE.walkA.length * SPR_PY) / 2) + bob - lr * KEY;
+  let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
+  let agent = SPRITE.agent;
+  if (sim.dir < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
+  let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  // SDK agents trail behind in the smaller pose. pollSessions() already counts
+  // them separately from the sessions the user can actually see.
+  for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
+    // Even cell sizes only: quarter cells are drawn at half a cell, and an odd
+    // size rounds that half down into a seam.
+    const ax = x - sim.dir * (sw * 0.5 + i * 40);
+    out += sprDraw(agent, ax, y0 + SPR_PY * 2, 8, 12, ox);
+  }
+  if (!walking) {
+    // One 'z' so a frozen key still reads as asleep rather than as a dead tile.
+    const zx = x + (sim.dir > 0 ? sw - 6 : -14) - ox;
+    if (zx > -20 && zx < KEY + 20)
+      out += `<text x="${zx.toFixed(1)}" y="${(y0 + 6).toFixed(1)}" font-family="${MONO}" font-size="18" fill="${C.dim}">z</text>`;
+  }
+  // Most keys are empty most frames, and skipping the setImage outright is real
+  // savings at this rate — but a key it has just walked off needs one blank
+  // frame first, or it keeps showing the half it last drew.
+  const id = lc + "," + lr;
+  if (!out) {
+    if (!sim.painted.has(id)) return null;
+    sim.painted.delete(id);
+    return svgWrap("", false);
+  }
+  sim.painted.add(id);
+  return svgWrap(out, false);
+}
 
 function simFor(kind, key, cols, rows) {
   let s = sims.get(key);
@@ -1253,6 +1424,8 @@ function simFor(kind, key, cols, rows) {
     s = { w: Math.max(3, Math.floor(W / PIPE_CELL)), h: Math.max(3, Math.floor(H / PIPE_CELL)), pipes: [], cells: 0, fade: 0 };
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
+  } else if (kind === "scuttle") {
+    s = { p: 0, dir: 1, phase: 0, cols, painted: new Set() };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -1261,6 +1434,7 @@ function simFor(kind, key, cols, rows) {
 function tileStep(kind, sim, busy) {
   if (kind === "life") lifeStep(sim, busy);
   else if (kind === "pipes") pipeStep(sim, busy);
+  else if (kind === "scuttle") scuttleStep(sim, busy);
 }
 
 function tileCell(kind, lc, lr, cols, rows, t, sim, busy, burn) {
@@ -1270,6 +1444,7 @@ function tileCell(kind, lc, lr, cols, rows, t, sim, busy, burn) {
     case "life": return lifeCellKey(lc, lr, cols, rows, t, sim);
     case "history": return historyCellKey(lc, lr, cols, rows, t, sim);
     case "pipes": return pipesCellKey(lc, lr, cols, rows, t, sim);
+    case "scuttle": return scuttleCellKey(lc, lr, cols, rows, t, sim, busy);
   }
 }
 
@@ -1562,14 +1737,29 @@ if (process.argv.includes("--selftest")) {
       // one mid-type, instead of every line arriving at once
       state.log.forEach((l, i) => { l.t = Date.now() - (state.log.length - i) * 380; });
       const sim = simFor(tile, `preview|${tile}|${cols}x${rows}`, cols, rows);
-      const frames = [0, 400, 800, -1];   // -1 renders the idle/at-rest state
+      // -1 renders the idle/at-rest state. More frames than the default three is
+      // the only way to judge an animation that is only occasionally wrong —
+      // the walker straddling a key gap: `npm run preview -- --frames 12`
+      const nf = Math.max(1, Number(argOf("--frames") ?? 3));
+      const frames = [...Array(nf)].map((_, i) => i * 400).concat([-1]);
       const blockW = cols * PITCH;
+      // Advance by the tile's own frame rate rather than a fixed count, or the
+      // preview animates something the deck never runs. It also matters for
+      // sampling: a fixed count that divides evenly into a tile's cycle lands on
+      // the same phase every frame, which made the walker look mid-gap in 1 of
+      // 4 when he is actually there ~16% of the time.
+      const perFrame = Math.max(1, Math.round(400 / (TILE_SPEC[tile]?.ms ?? 140)));
       frames.forEach((t, k) => {
-        if (k > 0 && t >= 0) for (let i = 0; i < 6; i++) tileStep(tile, sim, busy);
+        if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
         const x0 = k * (blockW + 34);
         for (let c = 0; c < cols; c++)
-          for (let r = 0; r < rows; r++)
-            inner += place(tileCell(tile, c, r, cols, rows, Math.max(0, t), sim, t < 0 ? 0 : busy, burn), x0 + c * PITCH, 40 + r * PITCH);
+          for (let r = 0; r < rows; r++) {
+            // A tile may return null for "leave this key alone" (scuttle does,
+            // the keys he isn't standing on). The deck keeps the previous image
+            // there; a flat preview has to draw the empty key itself.
+            const img = tileCell(tile, c, r, cols, rows, Math.max(0, t), sim, t < 0 ? 0 : busy, burn);
+            inner += place(img ?? svgWrap("", false), x0 + c * PITCH, 40 + r * PITCH);
+          }
         inner += label(x0, 28, t < 0 ? "at rest (nothing busy)" : `${tile} — t = ${t}ms`);
       });
       w = frames.length * (blockW + 34) - 34;

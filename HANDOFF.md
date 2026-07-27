@@ -139,6 +139,26 @@ Per-tile things that will bite:
   what makes two differently-sized blocks work independently.
 - **History** — reads `hourTracker` events directly rather than the once-a-minute
   `tokensHour` sample, which is the only way to get sub-minute resolution.
+- **Scuttle** — a critter that walks the block. Sprites are a character grid
+  (`#` full cell, `=` lower half — the dark top edge reads as an eye — `(` / `)`
+  quarter cells), held as **data in `SPRITE_DEFAULT`, not drawing code**, so
+  `sprite.json` in the installed folder can replace it at load time. That's the
+  point: the shipped art is original, and anyone wanting a mascot they hold a
+  licence for drops it in `local-assets/sprite.json` for `deploy.ps1` to copy
+  across. **Don't inline third-party artwork here** — the README promises the
+  repo contains none, and that promise is the reason this indirection exists.
+  Two things will bite: at 11 cells it's 132px wide in a 144px key, so any
+  off-centre position slices it into what looks like two animals — hence
+  `SPR_DWELL`, which parks it on key centres and darts it across the gap. And
+  every sprite origin is `Math.round`ed, because neighbouring cells share an
+  edge and fractional coordinates get both sides antialiased, drawing a hairline
+  grid through the creature.
+
+`--preview` advances each tile by *its own* `TILE_SPEC.ms`, not a fixed step
+count. Don't "simplify" that back: a fixed count animates something the deck
+never runs, and where a tile has a dwell it lands on the same phase every frame
+and misreports how often the tile looks wrong. `--frames N` renders a longer
+strip, which is the only way to judge an animation that's only occasionally bad.
 
 ## Not every `~/.claude/sessions/*.json` is a session the user can see
 
@@ -192,7 +212,9 @@ means switching to a profile bundled in the `.sdPlugin` folder.
   what makes a bar continuous across four keys instead of four stair steps.
 - The generator writes a **stored zip with fixed timestamps and GUIDs**, so
   rebuilds are byte-identical unless the layout changed and a regenerated
-  profile updates the installed one instead of appearing twice.
+  profile updates the installed one instead of appearing twice. It also embeds
+  `manifest.Version`, so **bumping the version rewrites the profile too** — that
+  churn in the diff is expected, not the generator being non-deterministic.
 
 ## Usage poll rate is adaptive, and the reset is laggy on the server side
 
