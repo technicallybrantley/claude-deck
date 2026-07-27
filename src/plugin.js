@@ -1298,9 +1298,10 @@ const sprFlip = (rows) => rows.map((r) =>
 
 // Emits only the cells landing on this key; without the cull every key in the
 // block would carry the whole sprite.
-function sprDraw(rows, x0, y0, px, py, ox) {
+function sprDraw(rows, x0, y0, px, py, ox, color) {
+  const fill = color ?? SPRITE.body;
   const R = (rx, ry, rw, rh) =>
-    `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${SPRITE.body}"/>`;
+    `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${fill}"/>`;
   // Snapped to whole pixels. Neighbouring cells share an edge, and on fractional
   // coordinates the renderer antialiases both sides of that seam — which draws a
   // hairline grid straight through him wherever he isn't key-aligned.
@@ -1357,11 +1358,41 @@ const sprStepping = (sim) => {
   return u > SPR_DWELL && u < 1 - SPR_DWELL;
 };
 
+// Idle business. Parked on a key he'll occasionally fish out something to play
+// with or pull a face. Deliberately drawn from these grids rather than from
+// extra sprite poses, so a swapped-in sprite.json gets the same repertoire
+// without having to supply anything more than a walk and a sleep.
+const ACT_ART = {
+  heart: [" # # ", "#####", "#####", " ### ", "  #  "],
+  excl:  ["##", "##", "##", "  ", "##"],
+  ball:  [" ## ", "####", "####", " ## "],
+  bubble:[" ## ", "#  #", "#  #", " ## "],
+};
+// Ticks, at TILE_SPEC.scuttle.ms (140ms) each.
+const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
+const SPR_ACTS = Object.keys(ACT_LEN);
+const rollAct = () => 40 + Math.floor(Math.random() * 120);   // 5.6s–22s between bits
+
 function scuttleStep(sim, busy) {
   // The same telemetry the rain tile reads: how fast it scuttles is the burn
   // rate, and more sessions working hurry it along.
   const burn = state.burn?.tokensHour ?? 0;
   sim.phase++;
+  // An act holds him in place until it finishes — he shouldn't juggle mid-stride.
+  if (sim.act) {
+    if (++sim.actT >= ACT_LEN[sim.act]) { sim.act = null; sim.actNext = rollAct(); }
+    return;
+  }
+  sim.actNext--;
+  // Only ever start a bit while parked, and snap to the key first: an act is the
+  // one time he stands still long enough for a gap to be obvious.
+  const parked = sim.cols < 2 || (() => { const u = sim.p - Math.floor(sim.p); return u <= SPR_DWELL || u >= 1 - SPR_DWELL; })();
+  if (sim.actNext <= 0 && parked) {
+    sim.p = Math.round(sim.p);
+    sim.act = SPR_ACTS[Math.floor(Math.random() * SPR_ACTS.length)];
+    sim.actT = 0;
+    return;
+  }
   // One key wide is a legitimate placement — it just marches on the spot.
   // Bouncing with no room would flip its facing every single frame.
   if (sim.cols < 2) return;
@@ -1374,17 +1405,57 @@ function scuttleStep(sim, busy) {
   else if (sim.p <= 0) { sim.p = 0; sim.dir = 1; }
 }
 
+// Whatever he's currently playing with, drawn beside or above him. Returns "" on
+// the acts that are pure body movement (jump, spin) — those come out of the
+// pose and offset instead.
+function sprActArt(sim, x, y0, sw, sh, ox) {
+  const a = sim.act, k = sim.actT;
+  if (!a) return "";
+  // He fills 132 of the key's 144px, so there is no room to put a prop *beside*
+  // him — anything alongside lands on top of his own silhouette. Everything goes
+  // in the headroom above instead, which is also the only direction a prop can
+  // drift out of frame cleanly. Props are drawn in a contrasting colour for the
+  // same reason: body-coloured, they just read as part of him.
+  const mid = x + sw / 2, P = 6;
+  if (a === "ball") {
+    // Bounced off the top of his head and caught again.
+    const bx = mid - 12 + Math.sin(k * 0.3) * 24;
+    const by = y0 - 30 + Math.abs(Math.cos(k * 0.3)) * 14;
+    return sprDraw(ACT_ART.ball, bx, by, P, P, ox, C.text);
+  }
+  if (a === "bubble") {
+    // Blown upward, drifting, and gone for the last few ticks — it popped.
+    if (k > ACT_LEN.bubble - 5) return "";
+    return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
+  }
+  if (a === "heart") return sprDraw(ACT_ART.heart, mid - 15 + Math.sin(k * 0.25) * 4, y0 - 26 - k * 0.7, P, P, ox, C.bad);
+  if (a === "excl") return sprDraw(ACT_ART.excl, mid - 6, y0 - 34 + (k < 3 ? (3 - k) * 6 : 0), P, P, ox, C.warn);
+  return "";
+}
+
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX;
+  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
   const walking = busy > 0;
+  // He must never come to *rest* between keys. idleMs 0 freezes this tile
+  // wherever it stands, and a mid-dart freeze is the frame the user then stares
+  // at for minutes — so it reads as him living in the gap rather than crossing
+  // it. Crossing on the way is fine; stopping there is not. Settle him the
+  // moment he stops walking. Rounding is idempotent, so doing it once per key
+  // in the group is harmless.
+  // Dropping the act too, or he freezes mid-hop and sleeps in the air.
+  if (!walking) { sim.p = Math.round(sim.p); sim.act = null; }
   const x = sprX(sim);
-  const stepping = walking && sprStepping(sim) && sim.phase % 2;
+  const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
+  // jump arcs the whole body; spin flips his facing every tick on the spot.
+  const hop = sim.act === "jump" ? -Math.round(Math.sin((sim.actT / ACT_LEN.jump) * Math.PI) * 24) : 0;
   const bob = stepping ? -2 : 0;   // half-step lift, so it isn't gliding
-  const y0 = Math.round((H - SPRITE.walkA.length * SPR_PY) / 2) + bob - lr * KEY;
+  const y0 = Math.round((H - sh) / 2) + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
-  if (sim.dir < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
+  const facing = sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
+  if (facing < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
   let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   // SDK agents trail behind in the smaller pose. pollSessions() already counts
   // them separately from the sessions the user can actually see.
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
@@ -1425,7 +1496,7 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
   } else if (kind === "scuttle") {
-    s = { p: 0, dir: 1, phase: 0, cols, painted: new Set() };
+    s = { p: 0, dir: 1, phase: 0, cols, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -1749,8 +1820,13 @@ if (process.argv.includes("--selftest")) {
       // the same phase every frame, which made the walker look mid-gap in 1 of
       // 4 when he is actually there ~16% of the time.
       const perFrame = Math.max(1, Math.round(400 / (TILE_SPEC[tile]?.ms ?? 140)));
+      // Scuttle's bits of business fire at random, so waiting for one to show up
+      // in a preview is hopeless: `--act ball` pins it and walks the act's own
+      // clock forward across the strip instead.
+      const forceAct = argOf("--act");
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
+        if (forceAct && t >= 0) { sim.act = forceAct; sim.actT = Math.min(k * 2, (ACT_LEN[forceAct] ?? 20) - 1); }
         const x0 = k * (blockW + 34);
         for (let c = 0; c < cols; c++)
           for (let r = 0; r < rows; r++) {

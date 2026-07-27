@@ -4890,8 +4890,9 @@ try {
 }
 var sprW = () => SPRITE.walkA[0].length;
 var sprFlip = (rows) => rows.map((r) => [...r].reverse().map((c) => c === "(" ? ")" : c === ")" ? "(" : c).join(""));
-function sprDraw(rows, x0, y0, px, py, ox) {
-  const R = (rx, ry, rw, rh) => `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${SPRITE.body}"/>`;
+function sprDraw(rows, x0, y0, px, py, ox, color) {
+  const fill = color ?? SPRITE.body;
+  const R = (rx, ry, rw, rh) => `<rect x="${rx}" y="${ry}" width="${rw}" height="${rh}" fill="${fill}"/>`;
   x0 = Math.round(x0);
   y0 = Math.round(y0);
   let out = "";
@@ -4926,9 +4927,36 @@ var sprStepping = (sim) => {
   const u = sim.p - Math.floor(sim.p);
   return u > SPR_DWELL && u < 1 - SPR_DWELL;
 };
+var ACT_ART = {
+  heart: [" # # ", "#####", "#####", " ### ", "  #  "],
+  excl: ["##", "##", "##", "  ", "##"],
+  ball: [" ## ", "####", "####", " ## "],
+  bubble: [" ## ", "#  #", "#  #", " ## "]
+};
+var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
+var SPR_ACTS = Object.keys(ACT_LEN);
+var rollAct = () => 40 + Math.floor(Math.random() * 120);
 function scuttleStep(sim, busy) {
   const burn = state.burn?.tokensHour ?? 0;
   sim.phase++;
+  if (sim.act) {
+    if (++sim.actT >= ACT_LEN[sim.act]) {
+      sim.act = null;
+      sim.actNext = rollAct();
+    }
+    return;
+  }
+  sim.actNext--;
+  const parked = sim.cols < 2 || (() => {
+    const u = sim.p - Math.floor(sim.p);
+    return u <= SPR_DWELL || u >= 1 - SPR_DWELL;
+  })();
+  if (sim.actNext <= 0 && parked) {
+    sim.p = Math.round(sim.p);
+    sim.act = SPR_ACTS[Math.floor(Math.random() * SPR_ACTS.length)];
+    sim.actT = 0;
+    return;
+  }
   if (sim.cols < 2) return;
   const speed = 0.02 + Math.min(0.055, burn / 16e7) + Math.min(0.02, busy * 4e-3);
   sim.p += speed * sim.dir;
@@ -4941,20 +4969,44 @@ function scuttleStep(sim, busy) {
     sim.dir = 1;
   }
 }
+function sprActArt(sim, x, y0, sw, sh, ox) {
+  const a = sim.act, k = sim.actT;
+  if (!a) return "";
+  const mid = x + sw / 2, P = 6;
+  if (a === "ball") {
+    const bx = mid - 12 + Math.sin(k * 0.3) * 24;
+    const by = y0 - 30 + Math.abs(Math.cos(k * 0.3)) * 14;
+    return sprDraw(ACT_ART.ball, bx, by, P, P, ox, C.text);
+  }
+  if (a === "bubble") {
+    if (k > ACT_LEN.bubble - 5) return "";
+    return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
+  }
+  if (a === "heart") return sprDraw(ACT_ART.heart, mid - 15 + Math.sin(k * 0.25) * 4, y0 - 26 - k * 0.7, P, P, ox, C.bad);
+  if (a === "excl") return sprDraw(ACT_ART.excl, mid - 6, y0 - 34 + (k < 3 ? (3 - k) * 6 : 0), P, P, ox, C.warn);
+  return "";
+}
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX;
+  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
   const walking = busy > 0;
+  if (!walking) {
+    sim.p = Math.round(sim.p);
+    sim.act = null;
+  }
   const x = sprX(sim);
-  const stepping = walking && sprStepping(sim) && sim.phase % 2;
+  const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
+  const hop = sim.act === "jump" ? -Math.round(Math.sin(sim.actT / ACT_LEN.jump * Math.PI) * 24) : 0;
   const bob = stepping ? -2 : 0;
-  const y0 = Math.round((H - SPRITE.walkA.length * SPR_PY) / 2) + bob - lr * KEY;
+  const y0 = Math.round((H - sh) / 2) + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
-  if (sim.dir < 0) {
+  const facing = sim.act === "spin" ? sim.actT % 2 ? -sim.dir : sim.dir : sim.dir;
+  if (facing < 0) {
     pose = sprFlip(pose);
     agent = sprFlip(agent);
   }
   let out = sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
     const ax = x - sim.dir * (sw * 0.5 + i * 40);
     out += sprDraw(agent, ax, y0 + SPR_PY * 2, 8, 12, ox);
@@ -4986,7 +5038,7 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 3e4 };
   } else if (kind === "scuttle") {
-    s = { p: 0, dir: 1, phase: 0, cols, painted: /* @__PURE__ */ new Set() };
+    s = { p: 0, dir: 1, phase: 0, cols, painted: /* @__PURE__ */ new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -5294,8 +5346,13 @@ if (process.argv.includes("--selftest")) {
       const frames = [...Array(nf)].map((_, i) => i * 400).concat([-1]);
       const blockW = cols * PITCH;
       const perFrame = Math.max(1, Math.round(400 / (TILE_SPEC[tile]?.ms ?? 140)));
+      const forceAct = argOf("--act");
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
+        if (forceAct && t >= 0) {
+          sim.act = forceAct;
+          sim.actT = Math.min(k * 2, (ACT_LEN[forceAct] ?? 20) - 1);
+        }
         const x0 = k * (blockW + 34);
         for (let c = 0; c < cols; c++)
           for (let r = 0; r < rows; r++) {

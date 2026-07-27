@@ -147,12 +147,26 @@ Per-tile things that will bite:
   licence for drops it in `local-assets/sprite.json` for `deploy.ps1` to copy
   across. **Don't inline third-party artwork here** — the README promises the
   repo contains none, and that promise is the reason this indirection exists.
-  Two things will bite: at 11 cells it's 132px wide in a 144px key, so any
+  Three things will bite. At 11 cells it's 132px wide in a 144px key, so any
   off-centre position slices it into what looks like two animals — hence
-  `SPR_DWELL`, which parks it on key centres and darts it across the gap. And
-  every sprite origin is `Math.round`ed, because neighbouring cells share an
-  edge and fractional coordinates get both sides antialiased, drawing a hairline
-  grid through the creature.
+  `SPR_DWELL`, which parks it on key centres and darts it across the gap. Every
+  sprite origin is `Math.round`ed, because neighbouring cells share an edge and
+  fractional coordinates get both sides antialiased, drawing a hairline grid
+  through the creature.
+
+  And the invariant that's easy to break: **it may cross a gap but must never
+  come to rest in one.** `idleMs: 0` freezes the tile wherever it stands, and
+  that frozen frame is what you then look at for minutes — so a mid-dart freeze
+  doesn't read as "crossing", it reads as living in the gap. `scuttleCellKey`
+  snaps `sim.p` to the nearest key (and drops any act, or it sleeps mid-hop) the
+  moment `busy` hits zero. Anything that changes when the tile stops animating
+  has to keep that snap.
+
+  Its idle business (`ACT_LEN` / `sprActArt`) only ever starts while parked, and
+  holds it still until done. Props go in the **headroom above** and in a
+  contrasting colour — there's no room beside a 132px creature in a 144px key,
+  and a body-coloured prop just reads as part of it. `--act <name>` forces one
+  for previewing, since they otherwise fire at random.
 
 `--preview` advances each tile by *its own* `TILE_SPEC.ms`, not a fixed step
 count. Don't "simplify" that back: a fixed count animates something the deck
