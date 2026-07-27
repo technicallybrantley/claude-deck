@@ -4911,22 +4911,41 @@ function sprDraw(rows, x0, y0, px, py, ox, color) {
   }
   return out;
 }
-var SPR_DWELL = 0.42;
 var smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
-var sprEase = (u) => {
-  const v = (u - SPR_DWELL) / (1 - 2 * SPR_DWELL);
-  return v <= 0 ? 0 : v >= 1 ? 1 : smoother(v);
+var sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
+var sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
+var sprPos = (sim) => {
+  const e = smoother(sim.t);
+  return [
+    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * e,
+    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * e
+  ];
 };
-var sprHome = (k) => k * KEY + (KEY - sprW() * SPR_PX) / 2;
-var sprX = (sim) => {
-  const k = Math.floor(sim.p);
-  return sprHome(k) + KEY * sprEase(sim.p - k);
-};
-var sprStepping = (sim) => {
-  if (sim.cols < 2) return true;
-  const u = sim.p - Math.floor(sim.p);
-  return u > SPR_DWELL && u < 1 - SPR_DWELL;
-};
+var sprStepping = (sim) => sim.t > 0 || sim.cols < 2 && sim.rows < 2;
+function sprAim(sim) {
+  if (sim.rows < 2 || Math.random() < 0.72) {
+    let c = sim.col + sim.dir;
+    if (c < 0 || c >= sim.cols) {
+      sim.dir *= -1;
+      c = sim.col + sim.dir;
+    }
+    if (c >= 0 && c < sim.cols) {
+      sim.tcol = c;
+      sim.trow = sim.row;
+      return true;
+    }
+  }
+  const up = Math.random() < 0.5 ? 1 : -1;
+  for (const d of [up, -up]) {
+    const r = sim.row + d;
+    if (r >= 0 && r < sim.rows) {
+      sim.trow = r;
+      sim.tcol = sim.col;
+      return true;
+    }
+  }
+  return false;
+}
 var ACT_ART = {
   heart: [" # # ", "#####", "#####", " ### ", "  #  "],
   excl: ["##", "##", "##", "  ", "##"],
@@ -4947,27 +4966,23 @@ function scuttleStep(sim, busy) {
     return;
   }
   sim.actNext--;
-  const parked = sim.cols < 2 || (() => {
-    const u = sim.p - Math.floor(sim.p);
-    return u <= SPR_DWELL || u >= 1 - SPR_DWELL;
-  })();
-  if (sim.actNext <= 0 && parked) {
-    sim.p = Math.round(sim.p);
+  if (sim.t === 0 && sim.actNext <= 0) {
     sim.act = SPR_ACTS[Math.floor(Math.random() * SPR_ACTS.length)];
     sim.actT = 0;
     return;
   }
-  if (sim.cols < 2) return;
-  const speed = 0.02 + Math.min(0.055, burn / 16e7) + Math.min(0.02, busy * 4e-3);
-  sim.p += speed * sim.dir;
-  const last = sim.cols - 1;
-  if (sim.p >= last) {
-    sim.p = last;
-    sim.dir = -1;
-  } else if (sim.p <= 0) {
-    sim.p = 0;
-    sim.dir = 1;
+  if (sim.t > 0) {
+    sim.t = Math.min(1, sim.t + 0.1 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 6e-3));
+    if (sim.t >= 1) {
+      sim.col = sim.tcol;
+      sim.row = sim.trow;
+      sim.t = 0;
+      sim.rest = 4 + Math.floor(Math.random() * 12);
+    }
+    return;
   }
+  if (--sim.rest > 0) return;
+  if (sprAim(sim)) sim.t = 1e-6;
 }
 function sprActArt(sim, x, y0, sw, sh, ox) {
   const a = sim.act, k = sim.actT;
@@ -4987,17 +5002,23 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
   return "";
 }
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
+  const ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
   const walking = busy > 0;
   if (!walking) {
-    sim.p = Math.round(sim.p);
+    if (sim.t > 0.5) {
+      sim.col = sim.tcol;
+      sim.row = sim.trow;
+    }
+    sim.tcol = sim.col;
+    sim.trow = sim.row;
+    sim.t = 0;
     sim.act = null;
   }
-  const x = sprX(sim);
+  const [x, ry] = sprPos(sim);
   const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
   const hop = sim.act === "jump" ? -Math.round(Math.sin(sim.actT / ACT_LEN.jump * Math.PI) * 24) : 0;
   const bob = stepping ? -2 : 0;
-  const y0 = Math.round((H - sh) / 2) + bob + hop - lr * KEY;
+  const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
   const facing = sim.act === "spin" ? sim.actT % 2 ? -sim.dir : sim.dir : sim.dir;
@@ -5038,7 +5059,22 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 3e4 };
   } else if (kind === "scuttle") {
-    s = { p: 0, dir: 1, phase: 0, cols, painted: /* @__PURE__ */ new Set(), act: null, actT: 0, actNext: rollAct() };
+    s = {
+      col: 0,
+      row: rows - 1,
+      tcol: 0,
+      trow: rows - 1,
+      t: 0,
+      rest: 1,
+      dir: 1,
+      phase: 0,
+      cols,
+      rows,
+      painted: /* @__PURE__ */ new Set(),
+      act: null,
+      actT: 0,
+      actNext: rollAct()
+    };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -5298,6 +5334,21 @@ if (process.argv.includes("--selftest")) {
       log(`  ${name.padEnd(26)} -> ${usageStale() ?? "(live, no label)"}`);
     }
     state.usageAt = savedAt;
+    log("selftest scuttle (at rest, sprite must fit inside one key):");
+    const sprSW = sprW() * SPR_PX, sprSH = SPRITE.walkA.length * SPR_PY;
+    for (const [cols, rows] of [[1, 1], [4, 1], [2, 2], [3, 2], [8, 4]]) {
+      const sim = simFor("scuttle", `selftest|scuttle|${cols}x${rows}`, cols, rows);
+      const seen = /* @__PURE__ */ new Set();
+      let bad = 0;
+      for (let i = 0; i < 6e3; i++) {
+        scuttleStep(sim, 2);
+        if (sim.t !== 0) continue;
+        const [x, y] = sprPos(sim);
+        if (x < sim.col * KEY || x + sprSW > (sim.col + 1) * KEY || y < sim.row * KEY || y + sprSH > (sim.row + 1) * KEY) bad++;
+        seen.add(`${sim.col},${sim.row}`);
+      }
+      log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
+    }
     const t0 = Date.now();
     await pollWeek();
     log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);

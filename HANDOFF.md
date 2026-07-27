@@ -147,20 +147,31 @@ Per-tile things that will bite:
   licence for drops it in `local-assets/sprite.json` for `deploy.ps1` to copy
   across. **Don't inline third-party artwork here** — the README promises the
   repo contains none, and that promise is the reason this indirection exists.
-  Three things will bite. At 11 cells it's 132px wide in a 144px key, so any
-  off-centre position slices it into what looks like two animals — hence
-  `SPR_DWELL`, which parks it on key centres and darts it across the gap. Every
-  sprite origin is `Math.round`ed, because neighbouring cells share an edge and
-  fractional coordinates get both sides antialiased, drawing a hairline grid
-  through the creature.
+  The invariant everything else serves: **it may cross the gap between keys but
+  must never come to rest in one.** At 11 cells it's 132px wide in a 144px key,
+  so any off-centre rest slices it into what looks like two animals, and
+  `idleMs: 0` freezes the tile wherever it stands — that frozen frame is then
+  what you look at for minutes, so it reads as living in the gap rather than
+  crossing it.
 
-  And the invariant that's easy to break: **it may cross a gap but must never
-  come to rest in one.** `idleMs: 0` freezes the tile wherever it stands, and
-  that frozen frame is what you then look at for minutes — so a mid-dart freeze
-  doesn't read as "crossing", it reads as living in the gap. `scuttleCellKey`
-  snaps `sim.p` to the nearest key (and drops any act, or it sleeps mid-hop) the
-  moment `busy` hits zero. Anything that changes when the tile stops animating
-  has to keep that snap.
+  It's structural, not a patch: **position is a grid cell, never a pixel.** It
+  stands on key `(col,row)`, hops to an adjacent one, and every drawn position
+  interpolates between two key *homes*, so `t === 0` is exactly on a key by
+  construction. `scuttleCellKey` lands it on the nearer key (and drops any act,
+  or it sleeps mid-jump) the moment `busy` hits zero.
+
+  The trap that actually bit: the first version tracked one fractional
+  coordinate and centred the sprite **on the canvas**. That's the same answer as
+  "centre on the key row" for a 1-row block and wrong for every other shape — on
+  a 2x2 it parked it at y=104 of a 288px canvas, straddling the seam, so it lived
+  exactly where all four keys meet. Previewing only `--rows 1` hid it completely.
+  `npm run selftest` now asserts across 1x1 / 4x1 / 2x2 / 3x2 / 8x4 that at rest
+  the sprite fits inside a single key, and that it reaches every key in the
+  block. Run it after touching the walk.
+
+  Also: every sprite origin is `Math.round`ed, because neighbouring cells share
+  an edge and fractional coordinates get both sides antialiased, drawing a
+  hairline grid through the creature.
 
   Its idle business (`ACT_LEN` / `sprActArt`) only ever starts while parked, and
   holds it still until done. Props go in the **headroom above** and in a

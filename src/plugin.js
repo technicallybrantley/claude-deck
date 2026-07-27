@@ -1333,30 +1333,47 @@ function sprDraw(rows, x0, y0, px, py, ox, color) {
 // step and darting across the middle is what actually fixes it, and it reads
 // better besides: pause, scuttle, pause is what the animal does.
 //
-// At 11 cells it is 132px wide in a 144px key, so *any* off-centre position
-// slices it into what looks like two small animals; the only real lever is how
-// little time it spends there. At 0.42 the dart is 16% of each key-step
-// (~0.27s), and `npm run preview -- --tile scuttle --frames 8` catches it
-// mid-gap in roughly one frame of five. Lowering this makes the walk smoother
-// and the creature more often cut in half.
-const SPR_DWELL = 0.42;
+// Where he rests is a grid cell, never a pixel. He stands on key (col,row) and
+// hops to an adjacent one, and every position is an interpolation *between two
+// key homes* — so at rest (t === 0) he is exactly centred on a key by
+// construction. That is what makes "may cross a gap, may not live in one"
+// structural instead of a patch applied per axis.
+//
+// The earlier version tracked a single fractional coordinate and centred the
+// sprite on the whole canvas, which is correct for a 1-row block and wrong for
+// every other shape: on a 2x2 it parked him at y=104 of a 288px canvas, i.e.
+// straddling the seam, so he lived at the point where all four keys meet.
+// Anything that reintroduces "centre on the canvas" brings that straight back.
 const smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
-const sprEase = (u) => {
-  const v = (u - SPR_DWELL) / (1 - 2 * SPR_DWELL);
-  return v <= 0 ? 0 : v >= 1 ? 1 : smoother(v);
+const sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
+const sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
+const sprPos = (sim) => {
+  const e = smoother(sim.t);
+  return [
+    sprHomeX(sim.col) + (sprHomeX(sim.tcol) - sprHomeX(sim.col)) * e,
+    sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * e,
+  ];
 };
-const sprHome = (k) => k * KEY + (KEY - sprW() * SPR_PX) / 2;
-const sprX = (sim) => {
-  const k = Math.floor(sim.p);
-  return sprHome(k) + KEY * sprEase(sim.p - k);
-};
-// Legs move only while it is actually crossing; flapping them during the dwell
-// looks like a treadmill. A one-key block has nowhere to go, so it marches.
-const sprStepping = (sim) => {
-  if (sim.cols < 2) return true;
-  const u = sim.p - Math.floor(sim.p);
-  return u > SPR_DWELL && u < 1 - SPR_DWELL;
-};
+// Legs move only while actually hopping; flapping them at rest is a treadmill.
+// A single-key block has nowhere to go, so it marches on the spot instead.
+const sprStepping = (sim) => sim.t > 0 || (sim.cols < 2 && sim.rows < 2);
+
+// Prefers carrying on the way it's already facing, so it paces the block rather
+// than jittering on one key. Vertical hops are the minority so the walk still
+// reads as a walk.
+function sprAim(sim) {
+  if (sim.rows < 2 || Math.random() < 0.72) {
+    let c = sim.col + sim.dir;
+    if (c < 0 || c >= sim.cols) { sim.dir *= -1; c = sim.col + sim.dir; }
+    if (c >= 0 && c < sim.cols) { sim.tcol = c; sim.trow = sim.row; return true; }
+  }
+  const up = Math.random() < 0.5 ? 1 : -1;
+  for (const d of [up, -up]) {
+    const r = sim.row + d;
+    if (r >= 0 && r < sim.rows) { sim.trow = r; sim.tcol = sim.col; return true; }
+  }
+  return false;
+}
 
 // Idle business. Parked on a key he'll occasionally fish out something to play
 // with or pull a face. Deliberately drawn from these grids rather than from
@@ -1384,25 +1401,22 @@ function scuttleStep(sim, busy) {
     return;
   }
   sim.actNext--;
-  // Only ever start a bit while parked, and snap to the key first: an act is the
-  // one time he stands still long enough for a gap to be obvious.
-  const parked = sim.cols < 2 || (() => { const u = sim.p - Math.floor(sim.p); return u <= SPR_DWELL || u >= 1 - SPR_DWELL; })();
-  if (sim.actNext <= 0 && parked) {
-    sim.p = Math.round(sim.p);
+  // Mid-hop he is over a gap, so an act — the one thing that holds him still for
+  // seconds — may only begin from a standstill.
+  if (sim.t === 0 && sim.actNext <= 0) {
     sim.act = SPR_ACTS[Math.floor(Math.random() * SPR_ACTS.length)];
     sim.actT = 0;
     return;
   }
-  // One key wide is a legitimate placement — it just marches on the spot.
-  // Bouncing with no room would flip its facing every single frame.
-  if (sim.cols < 2) return;
-  const speed = 0.020 + Math.min(0.055, burn / 1.6e8) + Math.min(0.02, busy * 0.004);
-  sim.p += speed * sim.dir;
-  const last = sim.cols - 1;
-  // Bounce rather than wrap: wrapping spends half the cycle off-canvas, which
-  // on a short block reads as it having vanished.
-  if (sim.p >= last) { sim.p = last; sim.dir = -1; }
-  else if (sim.p <= 0) { sim.p = 0; sim.dir = 1; }
+  if (sim.t > 0) {
+    // Mid-hop: finish it. Faster when there's more work going through.
+    sim.t = Math.min(1, sim.t + 0.10 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 0.006));
+    if (sim.t >= 1) { sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.rest = 4 + Math.floor(Math.random() * 12); }
+    return;
+  }
+  // Standing on a key. Pause a beat, then pick somewhere to go.
+  if (--sim.rest > 0) return;
+  if (sprAim(sim)) sim.t = 1e-6;   // non-zero starts the hop; still ~exactly home
 }
 
 // Whatever he's currently playing with, drawn beside or above him. Returns "" on
@@ -1434,22 +1448,27 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
 }
 
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const H = rows * KEY, ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
+  const ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
   const walking = busy > 0;
   // He must never come to *rest* between keys. idleMs 0 freezes this tile
-  // wherever it stands, and a mid-dart freeze is the frame the user then stares
-  // at for minutes — so it reads as him living in the gap rather than crossing
-  // it. Crossing on the way is fine; stopping there is not. Settle him the
-  // moment he stops walking. Rounding is idempotent, so doing it once per key
-  // in the group is harmless.
-  // Dropping the act too, or he freezes mid-hop and sleeps in the air.
-  if (!walking) { sim.p = Math.round(sim.p); sim.act = null; }
-  const x = sprX(sim);
+  // wherever it stands, and that frozen frame is what gets looked at for
+  // minutes — so a mid-hop freeze doesn't read as crossing, it reads as living
+  // in the gap. Land him on whichever key he was nearer. Idempotent, so running
+  // it once per key in the group is harmless. The act goes too, or he freezes
+  // mid-jump and sleeps in the air.
+  if (!walking) {
+    if (sim.t > 0.5) { sim.col = sim.tcol; sim.row = sim.trow; }
+    sim.tcol = sim.col; sim.trow = sim.row; sim.t = 0; sim.act = null;
+  }
+  const [x, ry] = sprPos(sim);
   const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
   // jump arcs the whole body; spin flips his facing every tick on the spot.
   const hop = sim.act === "jump" ? -Math.round(Math.sin((sim.actT / ACT_LEN.jump) * Math.PI) * 24) : 0;
   const bob = stepping ? -2 : 0;   // half-step lift, so it isn't gliding
-  const y0 = Math.round((H - sh) / 2) + bob + hop - lr * KEY;
+  // Vertically anchored to the key row he's standing on — NOT centred on the
+  // canvas, which is the same thing on a 1-row block and a seam-straddling bug
+  // on every other shape.
+  const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
   const facing = sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
@@ -1496,7 +1515,8 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
   } else if (kind === "scuttle") {
-    s = { p: 0, dir: 1, phase: 0, cols, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
+    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1,
+          phase: 0, cols, rows, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
   return s;
@@ -1757,6 +1777,28 @@ if (process.argv.includes("--selftest")) {
       log(`  ${name.padEnd(26)} -> ${usageStale() ?? "(live, no label)"}`);
     }
     state.usageAt = savedAt;
+
+    // Scuttle may cross the gap between keys but must never come to rest in one.
+    // This was missed once by previewing only 1-row blocks, where "centre on the
+    // canvas" and "centre on the key row" happen to be the same answer — on a
+    // 2x2 it parked him on the seam where all four keys meet. Assert the shapes
+    // instead of eyeballing a strip.
+    log("selftest scuttle (at rest, sprite must fit inside one key):");
+    const sprSW = sprW() * SPR_PX, sprSH = SPRITE.walkA.length * SPR_PY;
+    for (const [cols, rows] of [[1, 1], [4, 1], [2, 2], [3, 2], [8, 4]]) {
+      const sim = simFor("scuttle", `selftest|scuttle|${cols}x${rows}`, cols, rows);
+      const seen = new Set();
+      let bad = 0;
+      for (let i = 0; i < 6000; i++) {
+        scuttleStep(sim, 2);
+        if (sim.t !== 0) continue;               // mid-hop is allowed to straddle
+        const [x, y] = sprPos(sim);
+        if (x < sim.col * KEY || x + sprSW > (sim.col + 1) * KEY ||
+            y < sim.row * KEY || y + sprSH > (sim.row + 1) * KEY) bad++;
+        seen.add(`${sim.col},${sim.row}`);
+      }
+      log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
+    }
 
     const t0 = Date.now();
     await pollWeek();
