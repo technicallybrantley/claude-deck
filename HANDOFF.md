@@ -189,8 +189,30 @@ Per-tile things that will bite:
   a diagonal column when there's one in bounds — the landing is still a real key,
   so the invariant above is untouched.
 
+  Rides may span **several floors** at once, and `scuttleStep` divides the rate
+  by the distance — `t` always runs 0..1, so without that a three-floor climb
+  covers three times the pixels in the same time.
+
+  Pressing the key **reacts instead of pausing** (`scuttleReact`): pinchers,
+  spin, jump, startle, or bolting to a random key. Two details make it work.
+  It force-completes any hop first, because a reaction is exactly the thing that
+  would hold it still over a gap. And `scuttleWake` keeps the frame pump running
+  for 8s afterwards — `idleMs: 0` has already stopped it by the time a press
+  lands, so without the wake, poking it while Claude is idle would do nothing at
+  all, which is most of when you'd want to.
+
   `--act <name>` and `--style <name>` force one for previewing, since both
   otherwise fire at random and won't show up in a short strip.
+
+  **The shipped art is original to this repo and must stay that way.** It's a
+  9x6 upright critter whose eyes are *enclosed gaps* — blank cells with body
+  above and below — rather than notches cut into a row's top edge. That's a
+  deliberately different construction, and combined with the different grid
+  width it's why no row can coincide with a sprite built the other way. Anyone
+  wanting a licensed mascot puts it in `local-assets/sprite.json`; cell size is
+  per-sprite (`px`/`py`, both even) so an override isn't forced into this grid.
+  See the README note — Anthropic's trademark guidelines require prior approval
+  for their brand assets, so don't inline one here.
 
 `--preview` advances each tile by *its own* `TILE_SPEC.ms`, not a fixed step
 count. Don't "simplify" that back: a fixed count animates something the deck

@@ -4844,38 +4844,45 @@ var tilesPaused = false;
 var tileRunning = /* @__PURE__ */ new Set();
 var tileLast = /* @__PURE__ */ new Map();
 var sims = /* @__PURE__ */ new Map();
-var SPR_PX = 12;
-var SPR_PY = 16;
 var SPRITE_DEFAULT = {
   body: C.accent,
-  //         0123456789A
+  px: 12,
+  py: 14,
+  // An upright critter with a tuft, a wide brow and two feet. Its eyes are
+  // *enclosed gaps* — blank cells with body above and below — which is a
+  // different construction from cutting notches into a row's top edge, and the
+  // reason no row here can coincide with a sprite built the other way.
+  //        012345678
   walkA: [
-    "  #     #  ",
-    "  #######  ",
-    " ##=###=## ",
-    " ######### ",
-    "# #  #  # #"
+    "   ###   ",
+    " ####### ",
+    "##  #  ##",
+    " ####### ",
+    "#########",
+    " ##   ## "
   ],
   walkB: [
-    " #       # ",
-    "  #######  ",
-    " ##=###=## ",
-    " ######### ",
-    " ## # # ## "
+    "   ###   ",
+    " ####### ",
+    "##  #  ##",
+    " ####### ",
+    "#########",
+    "##     ##"
   ],
-  // Eyes closed (no '=' notches), antennae down, legs tucked: the single frame
-  // held while nothing is running.
+  // Eyes shut (the gaps close), tuft down, feet tucked: the one frame it holds
+  // while nothing is running.
   sleep: [
-    "   #   #   ",
-    "  #######  ",
-    " ######### ",
-    " ######### ",
-    "  ##   ##  "
+    "         ",
+    "  #####  ",
+    " ####### ",
+    " ####### ",
+    "#########",
+    "  #####  "
   ],
   agent: [
-    "  #  ",
-    " ### ",
-    " # # "
+    " # ",
+    "###",
+    "# #"
   ]
 };
 var SPRITE = SPRITE_DEFAULT;
@@ -4889,6 +4896,10 @@ try {
 } catch {
 }
 var sprW = () => SPRITE.walkA[0].length;
+var sprPX = () => SPRITE.px ?? 12;
+var sprPY = () => SPRITE.py ?? 16;
+var sprSW = () => sprW() * sprPX();
+var sprSH = () => SPRITE.walkA.length * sprPY();
 var sprFlip = (rows) => rows.map((r) => [...r].reverse().map((c) => c === "(" ? ")" : c === ")" ? "(" : c).join(""));
 function sprDraw(rows, x0, y0, px, py, ox, color) {
   const fill = color ?? SPRITE.body;
@@ -4912,8 +4923,8 @@ function sprDraw(rows, x0, y0, px, py, ox, color) {
   return out;
 }
 var smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
-var sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
-var sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
+var sprHomeX = (c) => c * KEY + Math.round((KEY - sprSW()) / 2);
+var sprHomeY = (r) => r * KEY + Math.round((KEY - sprSH()) / 2);
 var sprPos = (sim) => {
   const ex = smoother(sim.t);
   const ey = sim.style ? SPR_STYLE[sim.style].ease(sim.t) : ex;
@@ -4938,12 +4949,13 @@ function sprAim(sim) {
   }
   const first = Math.random() < 0.5 ? 1 : -1;
   for (const d of [first, -first]) {
-    const r = sim.row + d;
-    if (r < 0 || r >= sim.rows) continue;
-    sim.trow = r;
-    sim.tcol = sim.col;
+    const room = d < 0 ? sim.row : sim.rows - 1 - sim.row;
+    if (room < 1) continue;
     const opts = d < 0 ? SPR_UP : SPR_DOWN;
     sim.style = Math.random() < 0.58 ? opts[Math.floor(Math.random() * opts.length)] : null;
+    const span = sim.style && room > 1 && Math.random() < 0.45 ? 1 + Math.floor(Math.random() * room) : 1;
+    sim.trow = sim.row + d * span;
+    sim.tcol = sim.col;
     if (sim.style === "slide") {
       const c = sim.col + sim.dir;
       if (c >= 0 && c < sim.cols) sim.tcol = c;
@@ -4981,6 +4993,8 @@ var ACT_ART = {
   ball: [" ## ", "####", "####", " ## "],
   bubble: [" ## ", "#  #", "#  #", " ## "],
   balloon: [" ## ", "####", "####", " ## ", "  # ", " #  "],
+  clawOpen: [" ##", "#  ", " ##"],
+  clawShut: [" ##", "###", " ##"],
   // Wider than he is, or it reads as a hat rather than a canopy. Three rows
   // only: there are just ~32px of headroom above him inside a key.
   chute: [
@@ -5001,9 +5015,44 @@ var SPR_STYLE = {
 };
 var SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
 var SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
-var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
+var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20 };
 var SPR_ACTS = Object.keys(ACT_LEN);
 var rollAct = () => 40 + Math.floor(Math.random() * 120);
+var SPR_REACTS = ["pinch", "spin", "flee", "jump", "excl"];
+var scuttleWake = 0;
+var scuttleSim = (device) => {
+  for (const [k, v] of sims) if (k.startsWith(`scuttle|${device}|`)) return v;
+  return null;
+};
+function scuttleReact(sim) {
+  if (sim.t > 0) {
+    sim.col = sim.tcol;
+    sim.row = sim.trow;
+    sim.t = 0;
+    sim.style = null;
+  }
+  sim.rest = 1;
+  let r = SPR_REACTS[Math.floor(Math.random() * SPR_REACTS.length)];
+  if (r === "flee" && sim.cols * sim.rows < 2) r = "spin";
+  if (r === "flee") {
+    let c, rr, guard = 0;
+    do {
+      c = Math.floor(Math.random() * sim.cols);
+      rr = Math.floor(Math.random() * sim.rows);
+    } while (c === sim.col && rr === sim.row && ++guard < 24);
+    sim.dir = c < sim.col ? -1 : 1;
+    sim.tcol = c;
+    sim.trow = rr;
+    sim.style = null;
+    sim.act = null;
+    sim.fast = 2.8;
+    sim.t = 1e-6;
+    return "flee";
+  }
+  sim.act = r;
+  sim.actT = 0;
+  return r;
+}
 function scuttleStep(sim, busy) {
   const burn = state.burn?.tokensHour ?? 0;
   sim.phase++;
@@ -5022,12 +5071,14 @@ function scuttleStep(sim, busy) {
   }
   if (sim.t > 0) {
     const rate = 0.1 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 6e-3);
-    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1));
+    const span = Math.max(1, Math.abs(sim.trow - sim.row), Math.abs(sim.tcol - sim.col));
+    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1) * sim.fast / span);
     if (sim.t >= 1) {
       sim.col = sim.tcol;
       sim.row = sim.trow;
       sim.t = 0;
       sim.style = null;
+      sim.fast = 1;
       sim.rest = 4 + Math.floor(Math.random() * 12);
     }
     return;
@@ -5048,13 +5099,17 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
     if (k > ACT_LEN.bubble - 5) return "";
     return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
   }
+  if (a === "pinch") {
+    const c = k % 4 < 2 ? ACT_ART.clawOpen : ACT_ART.clawShut;
+    return sprDraw(c, mid - 42, y0 - 24, 8, 8, ox, SPRITE.body) + sprDraw(sprFlip(c), mid + 18, y0 - 24, 8, 8, ox, SPRITE.body);
+  }
   if (a === "heart") return sprDraw(ACT_ART.heart, mid - 15 + Math.sin(k * 0.25) * 4, y0 - 26 - k * 0.7, P, P, ox, C.bad);
   if (a === "excl") return sprDraw(ACT_ART.excl, mid - 6, y0 - 34 + (k < 3 ? (3 - k) * 6 : 0), P, P, ox, C.warn);
   return "";
 }
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
-  const walking = busy > 0;
+  const ox = lc * KEY, sw = sprSW(), sh = sprSH();
+  const walking = busy > 0 || Date.now() < scuttleWake;
   if (!walking) {
     if (sim.t > 0.5) {
       sim.col = sim.tcol;
@@ -5079,11 +5134,11 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
     agent = sprFlip(agent);
   }
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
-  out += sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
     const ax = x - sim.dir * (sw * 0.5 + i * 40);
-    out += sprDraw(agent, ax, y0 + SPR_PY * 2, 8, 12, ox);
+    out += sprDraw(agent, ax, y0 + sprPY() * 2, 8, 12, ox);
   }
   if (!walking) {
     const zx = x + (sim.dir > 0 ? sw - 6 : -14) - ox;
@@ -5121,6 +5176,7 @@ function simFor(kind, key, cols, rows) {
       rest: 1,
       dir: 1,
       style: null,
+      fast: 1,
       phase: 0,
       cols,
       rows,
@@ -5265,6 +5321,17 @@ function onKeyDown(context, kind, device) {
       tilesPaused = !tilesPaused;
       for (const k of TILE_KINDS) renderTiles(k, false);
       return showOk(context);
+    // Scuttle spends its press on a reaction rather than a pause — a single
+    // small creature isn't the thing you need to mute, and poking it is the
+    // whole appeal.
+    case "scuttle": {
+      const sim = scuttleSim(device ?? views.get(context)?.device);
+      if (!sim) return showAlert(context);
+      scuttleWake = Date.now() + 8e3;
+      log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      renderTiles("scuttle", false);
+      return showOk(context);
+    }
     case "chart-open": {
       if (!device) return showAlert(context);
       const type = deviceTypes.get(device);
@@ -5389,7 +5456,6 @@ if (process.argv.includes("--selftest")) {
     }
     state.usageAt = savedAt;
     log("selftest scuttle (at rest, sprite must fit inside one key):");
-    const sprSW = sprW() * SPR_PX, sprSH = SPRITE.walkA.length * SPR_PY;
     for (const [cols, rows] of [[1, 1], [4, 1], [2, 2], [3, 2], [8, 4]]) {
       const sim = simFor("scuttle", `selftest|scuttle|${cols}x${rows}`, cols, rows);
       const seen = /* @__PURE__ */ new Set();
@@ -5398,7 +5464,7 @@ if (process.argv.includes("--selftest")) {
         scuttleStep(sim, 2);
         if (sim.t !== 0) continue;
         const [x, y] = sprPos(sim);
-        if (x < sim.col * KEY || x + sprSW > (sim.col + 1) * KEY || y < sim.row * KEY || y + sprSH > (sim.row + 1) * KEY) bad++;
+        if (x < sim.col * KEY || x + sprSW() > (sim.col + 1) * KEY || y < sim.row * KEY || y + sprSH() > (sim.row + 1) * KEY) bad++;
         seen.add(`${sim.col},${sim.row}`);
       }
       log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
@@ -5582,7 +5648,8 @@ if (process.argv.includes("--selftest")) {
         tileRunning.delete(kind);
         continue;
       }
-      const interval = active ? TILE_SPEC[kind].ms : TILE_SPEC[kind].idleMs;
+      const live = active || kind === "scuttle" && now < scuttleWake;
+      const interval = live ? TILE_SPEC[kind].ms : TILE_SPEC[kind].idleMs;
       if (!interval) {
         if (tileRunning.has(kind)) {
           tileRunning.delete(kind);
@@ -5593,7 +5660,7 @@ if (process.argv.includes("--selftest")) {
       if (now - (tileLast.get(kind) ?? 0) < interval) continue;
       tileLast.set(kind, now);
       tileRunning.add(kind);
-      renderTiles(kind, active);
+      renderTiles(kind, live);
     }
   }, 60);
   setInterval(() => {

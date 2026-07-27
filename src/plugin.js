@@ -1253,30 +1253,39 @@ const sims = new Map();   // per block+size simulation state (Life board, pipe p
 // licence for can be dropped in as local-assets/sprite.json, which deploy.ps1
 // copies into the installed folder and which replaces this at load time. Any
 // grid works; the walk geometry reads its width off the rows.
-const SPR_PX = 12, SPR_PY = 16;   // even numbers only — halves must land on whole pixels
+// Cell size is per-sprite so an override isn't forced into the shipped grid.
+// Both must stay even: half and quarter cells are drawn at exactly px/2, py/2.
 const SPRITE_DEFAULT = {
   body: C.accent,
-  //         0123456789A
-  walkA: ["  #     #  ",
-          "  #######  ",
-          " ##=###=## ",
-          " ######### ",
-          "# #  #  # #"],
-  walkB: [" #       # ",
-          "  #######  ",
-          " ##=###=## ",
-          " ######### ",
-          " ## # # ## "],
-  // Eyes closed (no '=' notches), antennae down, legs tucked: the single frame
-  // held while nothing is running.
-  sleep: ["   #   #   ",
-          "  #######  ",
-          " ######### ",
-          " ######### ",
-          "  ##   ##  "],
-  agent: ["  #  ",
-          " ### ",
-          " # # "],
+  px: 12, py: 14,
+  // An upright critter with a tuft, a wide brow and two feet. Its eyes are
+  // *enclosed gaps* — blank cells with body above and below — which is a
+  // different construction from cutting notches into a row's top edge, and the
+  // reason no row here can coincide with a sprite built the other way.
+  //        012345678
+  walkA: ["   ###   ",
+          " ####### ",
+          "##  #  ##",
+          " ####### ",
+          "#########",
+          " ##   ## "],
+  walkB: ["   ###   ",
+          " ####### ",
+          "##  #  ##",
+          " ####### ",
+          "#########",
+          "##     ##"],
+  // Eyes shut (the gaps close), tuft down, feet tucked: the one frame it holds
+  // while nothing is running.
+  sleep: ["         ",
+          "  #####  ",
+          " ####### ",
+          " ####### ",
+          "#########",
+          "  #####  "],
+  agent: [" # ",
+          "###",
+          "# #"],
 };
 let SPRITE = SPRITE_DEFAULT;
 try {
@@ -1290,6 +1299,10 @@ try {
   } else log("sprite: local override ignored (malformed)");
 } catch {}
 const sprW = () => SPRITE.walkA[0].length;
+const sprPX = () => SPRITE.px ?? 12;
+const sprPY = () => SPRITE.py ?? 16;
+const sprSW = () => sprW() * sprPX();          // drawn width in px
+const sprSH = () => SPRITE.walkA.length * sprPY();
 
 // Mirrored so it faces the way it is walking. Reversing a row also has to swap
 // which quarter cell each corner glyph is, or they point the wrong way.
@@ -1345,8 +1358,8 @@ function sprDraw(rows, x0, y0, px, py, ox, color) {
 // straddling the seam, so he lived at the point where all four keys meet.
 // Anything that reintroduces "centre on the canvas" brings that straight back.
 const smoother = (u) => u * u * u * (u * (u * 6 - 15) + 10);
-const sprHomeX = (c) => c * KEY + Math.round((KEY - sprW() * SPR_PX) / 2);
-const sprHomeY = (r) => r * KEY + Math.round((KEY - SPRITE.walkA.length * SPR_PY) / 2);
+const sprHomeX = (c) => c * KEY + Math.round((KEY - sprSW()) / 2);
+const sprHomeY = (r) => r * KEY + Math.round((KEY - sprSH()) / 2);
 const sprPos = (sim) => {
   // The vertical axis follows the ride's own curve — a slide accelerates, a
   // balloon eases off — while the horizontal stays smooth either way.
@@ -1372,11 +1385,17 @@ function sprAim(sim) {
   }
   const first = Math.random() < 0.5 ? 1 : -1;
   for (const d of [first, -first]) {
-    const r = sim.row + d;
-    if (r < 0 || r >= sim.rows) continue;
-    sim.trow = r; sim.tcol = sim.col;
+    const room = d < 0 ? sim.row : sim.rows - 1 - sim.row;   // floors available that way
+    if (room < 1) continue;
     const opts = d < 0 ? SPR_UP : SPR_DOWN;
     sim.style = Math.random() < 0.58 ? opts[Math.floor(Math.random() * opts.length)] : null;
+    // A ladder or a parachute is worth more than one floor — a long climb or a
+    // long drift is most of the reason to have them. Plain hops stay single-floor,
+    // and the landing is still a key either way.
+    const span = sim.style && room > 1 && Math.random() < 0.45
+      ? 1 + Math.floor(Math.random() * room) : 1;
+    sim.trow = sim.row + d * span;
+    sim.tcol = sim.col;
     // A slide runs diagonally when there's a column to land in — that's what
     // makes it read as a slide rather than as falling down a hole. The landing
     // is still a real key, so the rest-on-a-key invariant is untouched.
@@ -1428,6 +1447,8 @@ const ACT_ART = {
   ball:  [" ## ", "####", "####", " ## "],
   bubble:[" ## ", "#  #", "#  #", " ## "],
   balloon:[" ## ", "####", "####", " ## ", "  # ", " #  "],
+  clawOpen:[" ##", "#  ", " ##"],
+  clawShut:[" ##", "###", " ##"],
   // Wider than he is, or it reads as a hat rather than a canopy. Three rows
   // only: there are just ~32px of headroom above him inside a key.
   chute: ["  ########  ",
@@ -1447,9 +1468,43 @@ const SPR_STYLE = {
 const SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
 const SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
 // Ticks, at TILE_SPEC.scuttle.ms (140ms) each.
-const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12 };
+const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20 };
 const SPR_ACTS = Object.keys(ACT_LEN);
 const rollAct = () => 40 + Math.floor(Math.random() * 120);   // 5.6s–22s between bits
+
+// Poking the key gets a rise out of him, picked at random so two presses don't
+// do the same thing. `scuttleWake` keeps the tile animating for a few seconds
+// afterwards — without it a press while Claude is idle would do nothing at all,
+// because idleMs 0 has already stopped the frame pump.
+const SPR_REACTS = ["pinch", "spin", "flee", "jump", "excl"];
+let scuttleWake = 0;
+
+const scuttleSim = (device) => {
+  for (const [k, v] of sims) if (k.startsWith(`scuttle|${device}|`)) return v;
+  return null;
+};
+
+function scuttleReact(sim) {
+  // Always react from a standstill: mid-hop he is over a gap, and a reaction is
+  // exactly the thing that would hold him there long enough to notice.
+  if (sim.t > 0) { sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null; }
+  sim.rest = 1;
+  let r = SPR_REACTS[Math.floor(Math.random() * SPR_REACTS.length)];
+  if (r === "flee" && sim.cols * sim.rows < 2) r = "spin";   // nowhere to bolt to
+  if (r === "flee") {
+    let c, rr, guard = 0;
+    do {
+      c = Math.floor(Math.random() * sim.cols);
+      rr = Math.floor(Math.random() * sim.rows);
+    } while (c === sim.col && rr === sim.row && ++guard < 24);
+    sim.dir = c < sim.col ? -1 : 1;
+    sim.tcol = c; sim.trow = rr; sim.style = null; sim.act = null;
+    sim.fast = 2.8; sim.t = 1e-6;
+    return "flee";
+  }
+  sim.act = r; sim.actT = 0;
+  return r;
+}
 
 function scuttleStep(sim, busy) {
   // The same telemetry the rain tile reads: how fast it scuttles is the burn
@@ -1473,9 +1528,12 @@ function scuttleStep(sim, busy) {
     // Mid-hop: finish it. Faster when there's more work going through, and
     // scaled by the ride — a slide is over quickly, a climb is not.
     const rate = 0.10 + Math.min(0.09, burn / 1e8) + Math.min(0.03, busy * 0.006);
-    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1));
+    // t always runs 0..1, so without dividing by the distance a three-floor
+    // climb would cover three times the pixels in the same time.
+    const span = Math.max(1, Math.abs(sim.trow - sim.row), Math.abs(sim.tcol - sim.col));
+    sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1) * sim.fast / span);
     if (sim.t >= 1) {
-      sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null;
+      sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null; sim.fast = 1;
       sim.rest = 4 + Math.floor(Math.random() * 12);
     }
     return;
@@ -1508,14 +1566,21 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
     if (k > ACT_LEN.bubble - 5) return "";
     return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
   }
+  if (a === "pinch") {
+    // Claws up and snapping. In the headroom like everything else: a sprite can
+    // be nearly key-width, so there is no dependable room at its sides.
+    const c = k % 4 < 2 ? ACT_ART.clawOpen : ACT_ART.clawShut;
+    return sprDraw(c, mid - 42, y0 - 24, 8, 8, ox, SPRITE.body)
+         + sprDraw(sprFlip(c), mid + 18, y0 - 24, 8, 8, ox, SPRITE.body);
+  }
   if (a === "heart") return sprDraw(ACT_ART.heart, mid - 15 + Math.sin(k * 0.25) * 4, y0 - 26 - k * 0.7, P, P, ox, C.bad);
   if (a === "excl") return sprDraw(ACT_ART.excl, mid - 6, y0 - 34 + (k < 3 ? (3 - k) * 6 : 0), P, P, ox, C.warn);
   return "";
 }
 
 function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
-  const ox = lc * KEY, sw = sprW() * SPR_PX, sh = SPRITE.walkA.length * SPR_PY;
-  const walking = busy > 0;
+  const ox = lc * KEY, sw = sprSW(), sh = sprSH();
+  const walking = busy > 0 || Date.now() < scuttleWake;
   // He must never come to *rest* between keys. idleMs 0 freezes this tile
   // wherever it stands, and that frozen frame is what gets looked at for
   // minutes — so a mid-hop freeze doesn't read as crossing, it reads as living
@@ -1541,7 +1606,7 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   if (facing < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
   // Ride first, so he climbs the ladder rather than the ladder covering him.
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
-  out += sprDraw(pose, x, y0, SPR_PX, SPR_PY, ox);
+  out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   // SDK agents trail behind in the smaller pose. pollSessions() already counts
   // them separately from the sessions the user can actually see.
@@ -1549,7 +1614,7 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
     // Even cell sizes only: quarter cells are drawn at half a cell, and an odd
     // size rounds that half down into a seam.
     const ax = x - sim.dir * (sw * 0.5 + i * 40);
-    out += sprDraw(agent, ax, y0 + SPR_PY * 2, 8, 12, ox);
+    out += sprDraw(agent, ax, y0 + sprPY() * 2, 8, 12, ox);
   }
   if (!walking) {
     // One 'z' so a frozen key still reads as asleep rather than as a dead tile.
@@ -1583,7 +1648,7 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
   } else if (kind === "scuttle") {
-    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1, style: null,
+    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1, style: null, fast: 1,
           phase: 0, cols, rows, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
@@ -1723,6 +1788,17 @@ function onKeyDown(context, kind, device) {
       tilesPaused = !tilesPaused;   // a big animated block is worth being able to mute
       for (const k of TILE_KINDS) renderTiles(k, false);
       return showOk(context);
+    // Scuttle spends its press on a reaction rather than a pause — a single
+    // small creature isn't the thing you need to mute, and poking it is the
+    // whole appeal.
+    case "scuttle": {
+      const sim = scuttleSim(device ?? views.get(context)?.device);
+      if (!sim) return showAlert(context);
+      scuttleWake = Date.now() + 8000;
+      log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      renderTiles("scuttle", false);   // respond on this frame, not the next tick
+      return showOk(context);
+    }
     case "chart-open": {
       if (!device) return showAlert(context);
       const type = deviceTypes.get(device);
@@ -1852,7 +1928,7 @@ if (process.argv.includes("--selftest")) {
     // 2x2 it parked him on the seam where all four keys meet. Assert the shapes
     // instead of eyeballing a strip.
     log("selftest scuttle (at rest, sprite must fit inside one key):");
-    const sprSW = sprW() * SPR_PX, sprSH = SPRITE.walkA.length * SPR_PY;
+    
     for (const [cols, rows] of [[1, 1], [4, 1], [2, 2], [3, 2], [8, 4]]) {
       const sim = simFor("scuttle", `selftest|scuttle|${cols}x${rows}`, cols, rows);
       const seen = new Set();
@@ -1861,8 +1937,8 @@ if (process.argv.includes("--selftest")) {
         scuttleStep(sim, 2);
         if (sim.t !== 0) continue;               // mid-hop is allowed to straddle
         const [x, y] = sprPos(sim);
-        if (x < sim.col * KEY || x + sprSW > (sim.col + 1) * KEY ||
-            y < sim.row * KEY || y + sprSH > (sim.row + 1) * KEY) bad++;
+        if (x < sim.col * KEY || x + sprSW() > (sim.col + 1) * KEY ||
+            y < sim.row * KEY || y + sprSH() > (sim.row + 1) * KEY) bad++;
         seen.add(`${sim.col},${sim.row}`);
       }
       log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
@@ -2055,7 +2131,11 @@ if (process.argv.includes("--selftest")) {
     const now = Date.now();
     for (const kind of TILE_KINDS) {
       if (![...views.values()].some((v) => v.kind === kind)) { tileRunning.delete(kind); continue; }
-      const interval = active ? TILE_SPEC[kind].ms : TILE_SPEC[kind].idleMs;
+      // A poke wakes Scuttle even with nothing running. Without this the frame
+      // pump has already stopped by the time the press arrives, so reacting
+      // would be invisible — which is most of the time you'd want to poke it.
+      const live = active || (kind === "scuttle" && now < scuttleWake);
+      const interval = live ? TILE_SPEC[kind].ms : TILE_SPEC[kind].idleMs;
       if (!interval) {
         if (tileRunning.has(kind)) { tileRunning.delete(kind); renderTiles(kind, false); }
         continue;
@@ -2063,7 +2143,7 @@ if (process.argv.includes("--selftest")) {
       if (now - (tileLast.get(kind) ?? 0) < interval) continue;
       tileLast.set(kind, now);
       tileRunning.add(kind);
-      renderTiles(kind, active);
+      renderTiles(kind, live);
     }
   }, 60);
   // Animation ticker: busy-session dots + red pulse on gauges at 90%+

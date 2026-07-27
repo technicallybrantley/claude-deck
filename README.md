@@ -30,6 +30,7 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Game of Life** | Conway's Life in Claude orange; every request seeds a new glider. |
 | **Burn History** | Retro system-monitor graph of token burn over the last several minutes. |
 | **Pipes** | The screensaver, in blocks. Pipe count tracks how many sessions are working. |
+| **Scuttle** | A pixel critter that walks your keys while Claude works and sleeps when it doesn't. Press to poke it. |
 
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
@@ -61,8 +62,8 @@ computer.
 
 ### Animated tiles
 
-Five keys — **Activity Rain**, **Terminal Tail**, **Game of Life**, **Burn
-History** and **Pipes** — aren't really single keys. Drop several copies of one
+Six keys — **Activity Rain**, **Terminal Tail**, **Game of Life**, **Burn
+History**, **Pipes** and **Scuttle** — aren't really single keys. Drop several copies of one
 of them next to each other (a 3x4 block works well) and they stop being separate
 keys: the plugin takes their bounding box as one canvas and each key draws its
 slice of a single animation. Put a block anywhere, in any rectangle; nothing is
@@ -78,11 +79,13 @@ They're driven by real telemetry rather than a loop:
 | **Game of Life** | A real Conway simulation with wrapped edges. Each request drops a glider in; a board that dies out or stalls reseeds itself. |
 | **Burn History** | Tokens per 30s bucket over the last ~13 minutes, newest column on the right. Actual history, which the gauges don't give you. |
 | **Pipes** | One pipe per working session, up to four. Fills the block, then wipes and starts over. |
+| **Scuttle** | Walking pace = burn rate. It rests only ever *on* a key, hops between them, and takes a ladder or balloon up and a slide or parachute down — sometimes several rows at once. Parked, it produces something to play with or emotes. Press the key to poke it: it gets its pinchers out, spins, bolts to another key, or jumps. |
 
-**At rest** the animated ones stop entirely — Rain, Life and Pipes freeze on a
-final calm frame and the plugin stops pushing images until work resumes; Terminal
-and History slow down but keep the cursor blinking and the graph scrolling.
-Press any key in a block to pause it by hand.
+**At rest** the animated ones stop entirely — Rain, Life, Pipes and Scuttle
+freeze on a final calm frame and the plugin stops pushing images until work
+resumes; Terminal and History slow down but keep the cursor blinking and the
+graph scrolling. Press any key in a block to pause it by hand — except Scuttle,
+which spends its press on reacting, and wakes up for a few seconds to do it.
 
 | Limits at a glance | Agents at a glance |
 |---|---|
@@ -121,8 +124,8 @@ The plugin speaks the Stream Deck WebSocket protocol directly — the only runti
 
 ## Notes
 
-- Not affiliated with or endorsed by Anthropic. The spark icons and the Scuttle critter are original artwork drawn in a similar spirit; official Anthropic/Claude logos, mascots, and other trademarks are not included.
-- The Scuttle sprite is loaded from data, so you can swap in your own: drop a `sprite.json` next to the installed plugin (or `local-assets/sprite.json` before running `deploy.ps1`) with `walkA` / `walkB` / `sleep` rows, an optional `agent` pose, and a `body` colour. Rows are a character grid — `#` a full cell, `=` a lower half cell, `(` / `)` quarter cells — and every row of every pose must be the same width. Please only use artwork you have the rights to.
+- Not affiliated with or endorsed by Anthropic. All artwork in this repo is original to it. Anthropic's logos, mascots, and other brand assets are not included, and their [trademark guidelines](https://www.anthropic.com/legal/trademark-guidelines) require prior approval for any use of them — so if you swap in a sprite of your own, use artwork you have the rights to.
+- The Scuttle sprite is loaded from data, so you can swap in your own: drop a `sprite.json` next to the installed plugin (or `local-assets/sprite.json` before running `deploy.ps1`) with `walkA` / `walkB` / `sleep` rows, an optional `agent` pose, a `body` colour, and optional `px` / `py` cell sizes (both even). Rows are a character grid — `#` a full cell, `=` a lower half cell, `(` / `)` quarter cells — and every row of every pose must be the same width.
 - Usage percentages are account-wide, so desktop app, claude.ai, and Claude Code usage all show up in the gauges.
 
 ## License
