@@ -1370,10 +1370,6 @@ const sprPos = (sim) => {
     sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * ey,
   ];
 };
-// Legs move only while actually hopping; flapping them at rest is a treadmill.
-// A single-key block has nowhere to go, so it marches on the spot instead.
-const sprStepping = (sim) => sim.t > 0 || (sim.cols < 2 && sim.rows < 2);
-
 // Prefers carrying on the way it's already facing, so it paces the block rather
 // than jittering on one key. Vertical hops are the minority so the walk still
 // reads as a walk.
@@ -1468,9 +1464,48 @@ const SPR_STYLE = {
 const SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
 const SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
 // Ticks, at TILE_SPEC.scuttle.ms (140ms) each.
-const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20 };
-const SPR_ACTS = Object.keys(ACT_LEN);
+const SPR_PARTY_LEN = 22;   // ticks, ~3s at TILE_SPEC.scuttle.ms
+const ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20, dance: SPR_PARTY_LEN };
+// dance is the triple-tap payoff, never a spontaneous bit of business.
+const SPR_ACTS = Object.keys(ACT_LEN).filter((k) => k !== "dance");
+const PARTY_COLORS = [C.accent, C.accentHi, C.ok, C.warn, C.bad, C.text];
+
+// Every key in the block throws confetti and lets off a firework, wherever he
+// happens to be standing — the whole point is that the block goes off, not his
+// key. Positions come from laneHash so each piece keeps its own lane frame to
+// frame instead of teleporting, the same reason the rain tile hashes its lanes.
+function sprPartyArt(sim, lc, lr) {
+  const k = SPR_PARTY_LEN - sim.party;   // ticks elapsed
+  const seed = lc * 37 + lr * 101;
+  let out = "";
+  for (let i = 0; i < 16; i++) {
+    const x = 4 + laneHash(seed + i, 1) * 132;
+    const drop = 6 + laneHash(seed + i, 2) * 7;
+    const y = ((k * drop + laneHash(seed + i, 3) * 160) % 176) - 16;
+    const w = 4 + Math.floor(laneHash(seed + i, 4) * 4);
+    const col = PARTY_COLORS[Math.floor(laneHash(seed + i, 5) * PARTY_COLORS.length)];
+    out += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${w + 2}" fill="${col}" transform="rotate(${(k * 17 + i * 53) % 360} ${(x + w / 2).toFixed(1)} ${(y + w / 2).toFixed(1)})"/>`;
+  }
+  // Two bursts per key, staggered off that key's own seed so the block crackles
+  // instead of flashing in unison.
+  for (let b = 0; b < 2; b++) {
+    const bk = k - (Math.floor(laneHash(seed + b * 13, 6) * (SPR_PARTY_LEN - 10)) + b * 2);
+    if (bk < 0 || bk > 8) continue;
+    const cx = 24 + laneHash(seed + b, 7) * 96, cy = 24 + laneHash(seed + b, 8) * 84;
+    const col = PARTY_COLORS[Math.floor(laneHash(seed + b, 9) * PARTY_COLORS.length)];
+    for (let a = 0; a < 12; a++) {
+      const ang = (a / 12) * Math.PI * 2;
+      out += `<rect x="${(cx + Math.cos(ang) * bk * 8).toFixed(1)}" y="${(cy + Math.sin(ang) * bk * 8).toFixed(1)}" width="4" height="4" fill="${col}" opacity="${(1 - bk / 8).toFixed(2)}"/>`;
+    }
+  }
+  return out;
+}
 const rollAct = () => 40 + Math.floor(Math.random() * 120);   // 5.6s–22s between bits
+// How long he lingers on a key before moving on. Long enough to read as a stop
+// rather than a bounce, and randomised so a block never settles into a rhythm.
+const SPR_REST_MS = [2500, 4000];
+const rollRest = () =>
+  Math.round((SPR_REST_MS[0] + Math.random() * (SPR_REST_MS[1] - SPR_REST_MS[0])) / TILE_SPEC.scuttle.ms);
 
 // Poking the key gets a rise out of him, picked at random so two presses don't
 // do the same thing. `scuttleWake` keeps the tile animating for a few seconds
@@ -1478,11 +1513,20 @@ const rollAct = () => 40 + Math.floor(Math.random() * 120);   // 5.6s–22s betw
 // because idleMs 0 has already stopped the frame pump.
 const SPR_REACTS = ["pinch", "spin", "flee", "jump", "excl"];
 let scuttleWake = 0;
+let scuttleTaps = [];   // recent press times, for the triple-tap easter egg
 
 const scuttleSim = (device) => {
   for (const [k, v] of sims) if (k.startsWith(`scuttle|${device}|`)) return v;
   return null;
 };
+
+function scuttleParty(sim) {
+  if (sim.t > 0) { sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null; }
+  sim.party = SPR_PARTY_LEN;
+  sim.act = "dance";
+  sim.actT = 0;
+  sim.fast = 1;
+}
 
 function scuttleReact(sim) {
   // Always react from a standstill: mid-hop he is over a gap, and a reaction is
@@ -1511,6 +1555,13 @@ function scuttleStep(sim, busy) {
   // rate, and more sessions working hurry it along.
   const burn = state.burn?.tokensHour ?? 0;
   sim.phase++;
+  // The party outranks everything: he stays put and dances it out.
+  if (sim.party > 0) {
+    sim.party--;
+    sim.actT++;
+    if (!sim.party) { sim.act = null; sim.actNext = rollAct(); sim.rest = rollRest(); }
+    return;
+  }
   // An act holds him in place until it finishes — he shouldn't juggle mid-stride.
   if (sim.act) {
     if (++sim.actT >= ACT_LEN[sim.act]) { sim.act = null; sim.actNext = rollAct(); }
@@ -1534,7 +1585,7 @@ function scuttleStep(sim, busy) {
     sim.t = Math.min(1, sim.t + rate * (sim.style ? SPR_STYLE[sim.style].speed : 1) * sim.fast / span);
     if (sim.t >= 1) {
       sim.col = sim.tcol; sim.row = sim.trow; sim.t = 0; sim.style = null; sim.fast = 1;
-      sim.rest = 4 + Math.floor(Math.random() * 12);
+      sim.rest = rollRest();
     }
     return;
   }
@@ -1566,7 +1617,7 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
     if (k > ACT_LEN.bubble - 5) return "";
     return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
   }
-  if (a === "pinch") {
+  if (a === "pinch" || a === "dance") {
     // Claws up and snapping. In the headroom like everything else: a sprite can
     // be nearly key-width, so there is no dependable room at its sides.
     const c = k % 4 < 2 ? ACT_ART.clawOpen : ACT_ART.clawShut;
@@ -1590,24 +1641,36 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   if (!walking) {
     if (sim.t > 0.5) { sim.col = sim.tcol; sim.row = sim.trow; }
     sim.tcol = sim.col; sim.trow = sim.row; sim.t = 0; sim.act = null; sim.style = null;
+    sim.party = 0;
   }
-  const [x, ry] = sprPos(sim);
-  const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
-  // jump arcs the whole body; spin flips his facing every tick on the spot.
+  const [xh, ry] = sprPos(sim);
+  const moving = walking && !sim.act && sim.t > 0;
+  const parked = walking && !sim.act && !moving;
+  // Legs alternate while crossing. Parked, he shuffles a foot now and then and
+  // breathes: he now waits 2.5–4s on each key, and without some sign of life
+  // that long a pause reads as the tile having frozen rather than as standing.
+  const stepping = moving ? sim.phase % 2 === 1 : parked && Math.floor(sim.phase / 3) % 9 === 0;
+  const breathe = parked ? [0, 0, -1, -2, -2, -1, 0, 0][Math.floor(sim.phase / 5) % 8] : 0;
+  // jump arcs the whole body; dance sways it side to side; spin and dance both
+  // flip his facing on the spot.
+  const dancing = sim.act === "dance";
+  const x = xh + (dancing ? Math.round(Math.sin(sim.actT * 0.6) * 12) : 0);
   const hop = sim.act === "jump" ? -Math.round(Math.sin((sim.actT / ACT_LEN.jump) * Math.PI) * 24) : 0;
-  const bob = stepping ? -2 : 0;   // half-step lift, so it isn't gliding
+  const bob = (moving && stepping ? -2 : 0) + breathe;   // half-step lift, so it isn't gliding
   // Vertically anchored to the key row he's standing on — NOT centred on the
   // canvas, which is the same thing on a 1-row block and a seam-straddling bug
   // on every other shape.
   const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
-  const facing = sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
+  const facing = dancing ? (Math.floor(sim.actT / 3) % 2 ? -sim.dir : sim.dir)
+    : sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
   if (facing < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
   // Ride first, so he climbs the ladder rather than the ladder covering him.
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
   out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
+  if (sim.party > 0) out += sprPartyArt(sim, lc, lr);
   // SDK agents trail behind in the smaller pose. pollSessions() already counts
   // them separately from the sessions the user can actually see.
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
@@ -1648,7 +1711,7 @@ function simFor(kind, key, cols, rows) {
   } else if (kind === "history") {
     s = { bucketMs: 30_000 };
   } else if (kind === "scuttle") {
-    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1, style: null, fast: 1,
+    s = { col: 0, row: rows - 1, tcol: 0, trow: rows - 1, t: 0, rest: 1, dir: 1, style: null, fast: 1, party: 0,
           phase: 0, cols, rows, painted: new Set(), act: null, actT: 0, actNext: rollAct() };
   } else s = {};
   sims.set(key, s);
@@ -1794,8 +1857,20 @@ function onKeyDown(context, kind, device) {
     case "scuttle": {
       const sim = scuttleSim(device ?? views.get(context)?.device);
       if (!sim) return showAlert(context);
-      scuttleWake = Date.now() + 8000;
-      log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      const now = Date.now();
+      scuttleWake = now + 8000;   // comfortably outlasts the 3s party
+      // Three pokes in quick succession is the easter egg. Taps older than the
+      // window are dropped rather than counted, so three presses spread over a
+      // minute stay three ordinary pokes.
+      scuttleTaps = scuttleTaps.filter((t) => now - t < 1600);
+      scuttleTaps.push(now);
+      if (scuttleTaps.length >= 3) {
+        scuttleTaps = [];
+        scuttleParty(sim);
+        log("scuttle: triple tap -> party");
+      } else {
+        log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      }
       // No showOk here: the reaction *is* the acknowledgement, and Stream Deck's
       // green tick covers the whole key for about a second — hiding exactly the
       // thing the press just started. showAlert above stays, because a press
@@ -2026,6 +2101,9 @@ if (process.argv.includes("--selftest")) {
         sim.t = 0.001;
         sim.actNext = 1e9;   // don't let a random bit of business interrupt it
       }
+      // `--party` sets off the triple-tap easter egg so it can be looked at
+      // without pressing a physical key three times.
+      if (process.argv.includes("--party")) { sim.party = SPR_PARTY_LEN; sim.act = "dance"; sim.actT = 0; }
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);
         if (forceAct && t >= 0) { sim.act = forceAct; sim.actT = Math.min(k * 2, (ACT_LEN[forceAct] ?? 20) - 1); }

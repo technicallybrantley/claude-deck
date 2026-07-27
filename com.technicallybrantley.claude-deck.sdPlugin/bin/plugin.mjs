@@ -4933,7 +4933,6 @@ var sprPos = (sim) => {
     sprHomeY(sim.row) + (sprHomeY(sim.trow) - sprHomeY(sim.row)) * ey
   ];
 };
-var sprStepping = (sim) => sim.t > 0 || sim.cols < 2 && sim.rows < 2;
 function sprAim(sim) {
   if (sim.rows < 2 || Math.random() < 0.72) {
     let c = sim.col + sim.dir;
@@ -5015,15 +5014,56 @@ var SPR_STYLE = {
 };
 var SPR_UP = Object.keys(SPR_STYLE).filter((k) => SPR_STYLE[k].up);
 var SPR_DOWN = Object.keys(SPR_STYLE).filter((k) => !SPR_STYLE[k].up);
-var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20 };
-var SPR_ACTS = Object.keys(ACT_LEN);
+var SPR_PARTY_LEN = 22;
+var ACT_LEN = { ball: 40, bubble: 30, jump: 12, heart: 24, excl: 12, spin: 12, pinch: 20, dance: SPR_PARTY_LEN };
+var SPR_ACTS = Object.keys(ACT_LEN).filter((k) => k !== "dance");
+var PARTY_COLORS = [C.accent, C.accentHi, C.ok, C.warn, C.bad, C.text];
+function sprPartyArt(sim, lc, lr) {
+  const k = SPR_PARTY_LEN - sim.party;
+  const seed = lc * 37 + lr * 101;
+  let out = "";
+  for (let i = 0; i < 16; i++) {
+    const x = 4 + laneHash(seed + i, 1) * 132;
+    const drop = 6 + laneHash(seed + i, 2) * 7;
+    const y = (k * drop + laneHash(seed + i, 3) * 160) % 176 - 16;
+    const w = 4 + Math.floor(laneHash(seed + i, 4) * 4);
+    const col = PARTY_COLORS[Math.floor(laneHash(seed + i, 5) * PARTY_COLORS.length)];
+    out += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${w}" height="${w + 2}" fill="${col}" transform="rotate(${(k * 17 + i * 53) % 360} ${(x + w / 2).toFixed(1)} ${(y + w / 2).toFixed(1)})"/>`;
+  }
+  for (let b = 0; b < 2; b++) {
+    const bk = k - (Math.floor(laneHash(seed + b * 13, 6) * (SPR_PARTY_LEN - 10)) + b * 2);
+    if (bk < 0 || bk > 8) continue;
+    const cx = 24 + laneHash(seed + b, 7) * 96, cy = 24 + laneHash(seed + b, 8) * 84;
+    const col = PARTY_COLORS[Math.floor(laneHash(seed + b, 9) * PARTY_COLORS.length)];
+    for (let a = 0; a < 12; a++) {
+      const ang = a / 12 * Math.PI * 2;
+      out += `<rect x="${(cx + Math.cos(ang) * bk * 8).toFixed(1)}" y="${(cy + Math.sin(ang) * bk * 8).toFixed(1)}" width="4" height="4" fill="${col}" opacity="${(1 - bk / 8).toFixed(2)}"/>`;
+    }
+  }
+  return out;
+}
 var rollAct = () => 40 + Math.floor(Math.random() * 120);
+var SPR_REST_MS = [2500, 4e3];
+var rollRest = () => Math.round((SPR_REST_MS[0] + Math.random() * (SPR_REST_MS[1] - SPR_REST_MS[0])) / TILE_SPEC.scuttle.ms);
 var SPR_REACTS = ["pinch", "spin", "flee", "jump", "excl"];
 var scuttleWake = 0;
+var scuttleTaps = [];
 var scuttleSim = (device) => {
   for (const [k, v] of sims) if (k.startsWith(`scuttle|${device}|`)) return v;
   return null;
 };
+function scuttleParty(sim) {
+  if (sim.t > 0) {
+    sim.col = sim.tcol;
+    sim.row = sim.trow;
+    sim.t = 0;
+    sim.style = null;
+  }
+  sim.party = SPR_PARTY_LEN;
+  sim.act = "dance";
+  sim.actT = 0;
+  sim.fast = 1;
+}
 function scuttleReact(sim) {
   if (sim.t > 0) {
     sim.col = sim.tcol;
@@ -5056,6 +5096,16 @@ function scuttleReact(sim) {
 function scuttleStep(sim, busy) {
   const burn = state.burn?.tokensHour ?? 0;
   sim.phase++;
+  if (sim.party > 0) {
+    sim.party--;
+    sim.actT++;
+    if (!sim.party) {
+      sim.act = null;
+      sim.actNext = rollAct();
+      sim.rest = rollRest();
+    }
+    return;
+  }
   if (sim.act) {
     if (++sim.actT >= ACT_LEN[sim.act]) {
       sim.act = null;
@@ -5079,7 +5129,7 @@ function scuttleStep(sim, busy) {
       sim.t = 0;
       sim.style = null;
       sim.fast = 1;
-      sim.rest = 4 + Math.floor(Math.random() * 12);
+      sim.rest = rollRest();
     }
     return;
   }
@@ -5099,7 +5149,7 @@ function sprActArt(sim, x, y0, sw, sh, ox) {
     if (k > ACT_LEN.bubble - 5) return "";
     return sprDraw(ACT_ART.bubble, mid - 12 + Math.sin(k * 0.22) * 10, y0 - 18 - k * 1.4, P, P, ox, C.ok);
   }
-  if (a === "pinch") {
+  if (a === "pinch" || a === "dance") {
     const c = k % 4 < 2 ? ACT_ART.clawOpen : ACT_ART.clawShut;
     return sprDraw(c, mid - 42, y0 - 24, 8, 8, ox, SPRITE.body) + sprDraw(sprFlip(c), mid + 18, y0 - 24, 8, 8, ox, SPRITE.body);
   }
@@ -5120,15 +5170,21 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
     sim.t = 0;
     sim.act = null;
     sim.style = null;
+    sim.party = 0;
   }
-  const [x, ry] = sprPos(sim);
-  const stepping = walking && !sim.act && sprStepping(sim) && sim.phase % 2;
+  const [xh, ry] = sprPos(sim);
+  const moving = walking && !sim.act && sim.t > 0;
+  const parked = walking && !sim.act && !moving;
+  const stepping = moving ? sim.phase % 2 === 1 : parked && Math.floor(sim.phase / 3) % 9 === 0;
+  const breathe = parked ? [0, 0, -1, -2, -2, -1, 0, 0][Math.floor(sim.phase / 5) % 8] : 0;
+  const dancing = sim.act === "dance";
+  const x = xh + (dancing ? Math.round(Math.sin(sim.actT * 0.6) * 12) : 0);
   const hop = sim.act === "jump" ? -Math.round(Math.sin(sim.actT / ACT_LEN.jump * Math.PI) * 24) : 0;
-  const bob = stepping ? -2 : 0;
+  const bob = (moving && stepping ? -2 : 0) + breathe;
   const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
   let agent = SPRITE.agent;
-  const facing = sim.act === "spin" ? sim.actT % 2 ? -sim.dir : sim.dir : sim.dir;
+  const facing = dancing ? Math.floor(sim.actT / 3) % 2 ? -sim.dir : sim.dir : sim.act === "spin" ? sim.actT % 2 ? -sim.dir : sim.dir : sim.dir;
   if (facing < 0) {
     pose = sprFlip(pose);
     agent = sprFlip(agent);
@@ -5136,6 +5192,7 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
   out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
+  if (sim.party > 0) out += sprPartyArt(sim, lc, lr);
   for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
     const ax = x - sim.dir * (sw * 0.5 + i * 40);
     out += sprDraw(agent, ax, y0 + sprPY() * 2, 8, 12, ox);
@@ -5177,6 +5234,7 @@ function simFor(kind, key, cols, rows) {
       dir: 1,
       style: null,
       fast: 1,
+      party: 0,
       phase: 0,
       cols,
       rows,
@@ -5327,8 +5385,17 @@ function onKeyDown(context, kind, device) {
     case "scuttle": {
       const sim = scuttleSim(device ?? views.get(context)?.device);
       if (!sim) return showAlert(context);
-      scuttleWake = Date.now() + 8e3;
-      log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      const now = Date.now();
+      scuttleWake = now + 8e3;
+      scuttleTaps = scuttleTaps.filter((t) => now - t < 1600);
+      scuttleTaps.push(now);
+      if (scuttleTaps.length >= 3) {
+        scuttleTaps = [];
+        scuttleParty(sim);
+        log("scuttle: triple tap -> party");
+      } else {
+        log(`scuttle: poked -> ${scuttleReact(sim)}`);
+      }
       return renderTiles("scuttle", false);
     }
     case "chart-open": {
@@ -5527,6 +5594,11 @@ if (process.argv.includes("--selftest")) {
         sim.style = forceStyle;
         sim.t = 1e-3;
         sim.actNext = 1e9;
+      }
+      if (process.argv.includes("--party")) {
+        sim.party = SPR_PARTY_LEN;
+        sim.act = "dance";
+        sim.actT = 0;
       }
       frames.forEach((t, k) => {
         if (k > 0 && t >= 0) for (let i = 0; i < perFrame; i++) tileStep(tile, sim, busy);

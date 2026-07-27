@@ -201,8 +201,20 @@ Per-tile things that will bite:
   lands, so without the wake, poking it while Claude is idle would do nothing at
   all, which is most of when you'd want to.
 
-  `--act <name>` and `--style <name>` force one for previewing, since both
-  otherwise fire at random and won't show up in a short strip.
+  It lingers `SPR_REST_MS` (2.5–4s, randomised) on each key. That's long enough
+  that a *completely* still creature reads as a frozen tile, so parked it
+  breathes and shuffles a foot occasionally — don't remove the fidget without
+  shortening the rest.
+
+  **Triple-tapping the key is an easter egg**: `scuttleParty` runs ~3s of
+  confetti and fireworks on *every* key in the block, wherever it's standing,
+  while it dances with its claws out. Taps outside a 1.6s window are dropped, so
+  three presses over a minute stay three ordinary pokes. Party positions come
+  from `laneHash`, not `Math.random`, for the same reason the rain tile does it:
+  the pieces have to keep their lanes frame to frame instead of teleporting.
+
+  `--act <name>`, `--style <name>` and `--party` force one for previewing, since
+  they otherwise fire at random and won't show up in a short strip.
 
   **The shipped art is original to this repo and must stay that way.** It's a
   9x6 upright critter whose eyes are *enclosed gaps* — blank cells with body
