@@ -4348,9 +4348,13 @@ function pickBucket(o) {
 var AUTH_RETRY = 15e3;
 var USAGE_TIMEOUT = 15e3;
 var POLL_MIN = 9e4;
-var POLL_MAX = 2e5;
+var POLL_MAX = 15e4;
 var USER_SPACING = 1e4;
 var pollEvery = POLL_MIN;
+var lastRoutineAttempt = Date.now();
+var widenOn429 = (priority) => {
+  if (priority !== "user") pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
+};
 var usageBackoff = 0;
 var usagePolling = false;
 var authWait = false;
@@ -4359,8 +4363,8 @@ var lastUsageAttempt = 0;
 var lastUsageErrLogged = null;
 function nextUsageDelay() {
   if (authWait) return AUTH_RETRY;
-  const sinceLast = Date.now() - lastUsageAttempt;
-  return Math.max(usageBackoff, pollEvery - sinceLast, 5e3);
+  const sinceRoutine = Date.now() - lastRoutineAttempt;
+  return Math.max(usageBackoff, pollEvery - sinceRoutine, 5e3);
 }
 var CACHE_TTL = 12 * 36e5;
 var CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
@@ -4375,9 +4379,12 @@ try {
 }
 async function pollUsage(priority = "routine") {
   if (usagePolling) return;
-  if (Date.now() - lastUsageAttempt < (priority === "user" ? USER_SPACING : pollEvery)) return;
+  const now = Date.now();
+  if (now - lastUsageAttempt < USER_SPACING) return;
+  if (priority !== "user" && now - lastRoutineAttempt < pollEvery) return;
   usagePolling = true;
-  lastUsageAttempt = Date.now();
+  lastUsageAttempt = now;
+  if (priority !== "user") lastRoutineAttempt = now;
   try {
     const cred = await readToken();
     if (!cred) throw new Error("no OAuth token in credentials file", { cause: "auth" });
@@ -4393,7 +4400,7 @@ async function pollUsage(priority = "routine") {
     });
     if (res.status === 429) {
       authWait = false;
-      pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
+      widenOn429(priority);
       const retryAfter = Number(res.headers.get("retry-after")) * 1e3;
       usageBackoff = retryAfter > 0 ? Math.min(retryAfter, POLL_MAX) : 0;
       throw new Error(`usage endpoint HTTP 429 (interval now ${pollEvery / 1e3}s)`);
@@ -5940,10 +5947,10 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
-    const [savedEvery, savedAttempt] = [pollEvery, lastUsageAttempt];
+    const [savedEvery, savedAttempt, savedRoutine] = [pollEvery, lastUsageAttempt, lastRoutineAttempt];
     log("selftest poll cadence:");
     pollEvery = POLL_MIN;
-    lastUsageAttempt = Date.now();
+    lastUsageAttempt = lastRoutineAttempt = Date.now();
     log(`  ${"baseline".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1e3)}s (81% served; tracks well)`);
     pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
     log(`  ${"gap after ONE 429".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1e3)}s (must stay well under 240s)`);
@@ -5959,7 +5966,20 @@ if (process.argv.includes("--selftest")) {
     let extra = 0;
     for (let i = 0; i < 100; i++) if (Date.now() - lastUsageAttempt >= USER_SPACING) extra++;
     log(`  ${"100 rapid presses spend".padEnd(30)} -> ${extra} extra requests`);
-    [pollEvery, lastUsageAttempt] = [savedEvery, savedAttempt];
+    pollEvery = POLL_MIN;
+    lastRoutineAttempt = Date.now() - 8e4;
+    const dueBefore = Math.round(nextUsageDelay() / 1e3);
+    lastUsageAttempt = Date.now();
+    log(`  ${"routine due in".padEnd(30)} -> ${dueBefore}s, still ${Math.round(nextUsageDelay() / 1e3)}s after a key press`);
+    pollEvery = POLL_MIN;
+    widenOn429("user");
+    const afterUser = pollEvery;
+    widenOn429("routine");
+    log(`  ${"429 widens: user / routine".padEnd(30)} -> ${afterUser / 1e3}s / ${pollEvery / 1e3}s`);
+    pollEvery = POLL_MIN;
+    lastRoutineAttempt = Date.now();
+    log(`  ${"first routine poll after boot".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1e3)}s (not ~0s)`);
+    [pollEvery, lastUsageAttempt, lastRoutineAttempt] = [savedEvery, savedAttempt, savedRoutine];
     const [savedBackoff, savedWait] = [usageBackoff, authWait];
     log("selftest auth handling:");
     usageBackoff = POLL_MAX;

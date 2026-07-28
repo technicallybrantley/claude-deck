@@ -743,9 +743,28 @@ const USAGE_TIMEOUT = 15_000;   // a hung request must not stall the poll chain
 // fastest rate that is mostly served, widen only when genuinely throttled,
 // and decay back so a transient throttle can't permanently slow the deck.
 const POLL_MIN = 90_000;    // fastest we ever ask; 81% served, and it tracks well
-const POLL_MAX = 200_000;   // only reached if the server really is pushing back
-const USER_SPACING = 10_000;   // floor between event-driven polls
+// 150s, not 200s: the measurements show 100-130s gaps are served 98% of the
+// time, so anything past ~150s is overshoot that buys nothing and is felt as a
+// 3-minute-old gauge.
+const POLL_MAX = 150_000;
+const USER_SPACING = 10_000;   // hard floor between ANY two requests
 let pollEvery = POLL_MIN;
+// Deliberately separate from lastUsageAttempt. Routine cadence is measured from
+// the last ROUTINE attempt so a key press cannot push the automatic refresh out
+// — see pollUsage().
+//
+// Seeded to startup time, NOT 0: the socket-open handler already fetches on
+// launch, and a 0 here made the loop fire a second request ~10s behind it,
+// spending two of a throttled budget's requests on every restart.
+let lastRoutineAttempt = Date.now();
+
+// Only a ROUTINE 429 says our cadence is too fast. A key press is an extra
+// request on TOP of the cadence, so letting it widen the interval means mashing
+// the key when the number looks stale is what makes it staler — the exact
+// opposite of what the press is asking for.
+const widenOn429 = (priority) => {
+  if (priority !== "user") pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
+};
 
 let usageBackoff = 0;   // honoured Retry-After only; the interval does the rest
 let usagePolling = false;
@@ -762,8 +781,8 @@ function nextUsageDelay() {
   // Auth waits are not throttles: the retry costs a file read, not a request,
   // so poll briskly to pick the new token up as soon as Claude Code writes it.
   if (authWait) return AUTH_RETRY;
-  const sinceLast = Date.now() - lastUsageAttempt;
-  return Math.max(usageBackoff, pollEvery - sinceLast, 5_000);
+  const sinceRoutine = Date.now() - lastRoutineAttempt;
+  return Math.max(usageBackoff, pollEvery - sinceRoutine, 5_000);
 }
 
 // Survive restarts without re-polling. The window has to outlast a machine being
@@ -788,9 +807,17 @@ try {
 // mashed key both land on the same floor.
 async function pollUsage(priority = "routine") {
   if (usagePolling) return;
-  if (Date.now() - lastUsageAttempt < (priority === "user" ? USER_SPACING : pollEvery)) return;
+  const now = Date.now();
+  // Hard floor between any two requests, whoever asked.
+  if (now - lastUsageAttempt < USER_SPACING) return;
+  // Routine cadence is measured from the last ROUTINE attempt, never from a key
+  // press. Measuring it from any attempt meant that pressing the key — exactly
+  // what you do when the number looks stale — pushed the automatic refresh out
+  // by a full interval, and pressing it repeatedly starved it indefinitely.
+  if (priority !== "user" && now - lastRoutineAttempt < pollEvery) return;
   usagePolling = true;
-  lastUsageAttempt = Date.now();
+  lastUsageAttempt = now;
+  if (priority !== "user") lastRoutineAttempt = now;
   try {
     const cred = await readToken();
     if (!cred) throw new Error("no OAuth token in credentials file", { cause: "auth" });
@@ -814,7 +841,7 @@ async function pollUsage(priority = "routine") {
       // (120->240->480) is what produced the "8m old" holes, and a two-refill
       // bucket recovery produced 4-minute ones. A single throttled request must
       // cost a single interval.
-      pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
+      widenOn429(priority);
       const retryAfter = Number(res.headers.get("retry-after")) * 1000;
       usageBackoff = retryAfter > 0 ? Math.min(retryAfter, POLL_MAX) : 0;
       throw new Error(`usage endpoint HTTP 429 (interval now ${pollEvery / 1000}s)`);
@@ -2525,9 +2552,9 @@ if (process.argv.includes("--selftest")) {
     // here rather than discovering it on the deck again. Two earlier attempts
     // regressed exactly here: a doubling backoff gave 8-minute holes, and a
     // token bucket with a 2-token reserve gave 4-minute ones.
-    const [savedEvery, savedAttempt] = [pollEvery, lastUsageAttempt];
+    const [savedEvery, savedAttempt, savedRoutine] = [pollEvery, lastUsageAttempt, lastRoutineAttempt];
     log("selftest poll cadence:");
-    pollEvery = POLL_MIN; lastUsageAttempt = Date.now();
+    pollEvery = POLL_MIN; lastUsageAttempt = lastRoutineAttempt = Date.now();
     log(`  ${"baseline".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1000)}s (81% served; tracks well)`);
     pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
     log(`  ${"gap after ONE 429".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1000)}s (must stay well under 240s)`);
@@ -2541,7 +2568,25 @@ if (process.argv.includes("--selftest")) {
     let extra = 0;
     for (let i = 0; i < 100; i++) if (Date.now() - lastUsageAttempt >= USER_SPACING) extra++;
     log(`  ${"100 rapid presses spend".padEnd(30)} -> ${extra} extra requests`);
-    [pollEvery, lastUsageAttempt] = [savedEvery, savedAttempt];
+    // Pressing the key must never push the automatic refresh out. This shipped
+    // broken: routine pacing read lastUsageAttempt, so a press (and any 429 it
+    // drew) delayed the very refresh the press was asking for.
+    pollEvery = POLL_MIN;
+    lastRoutineAttempt = Date.now() - 80_000;   // 80s into a 90s interval
+    const dueBefore = Math.round(nextUsageDelay() / 1000);
+    lastUsageAttempt = Date.now();              // ...now the user presses the key
+    log(`  ${"routine due in".padEnd(30)} -> ${dueBefore}s, still ${Math.round(nextUsageDelay() / 1000)}s after a key press`);
+    // ...and a 429 that the press drew must not widen the interval either.
+    pollEvery = POLL_MIN;
+    widenOn429("user");
+    const afterUser = pollEvery;
+    widenOn429("routine");
+    log(`  ${"429 widens: user / routine".padEnd(30)} -> ${afterUser / 1000}s / ${pollEvery / 1000}s`);
+    // Startup must cost ONE request, not two: the socket-open fetch plus a loop
+    // that thinks it has never polled.
+    pollEvery = POLL_MIN; lastRoutineAttempt = Date.now();
+    log(`  ${"first routine poll after boot".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1000)}s (not ~0s)`);
+    [pollEvery, lastUsageAttempt, lastRoutineAttempt] = [savedEvery, savedAttempt, savedRoutine];
 
     // The post-reboot path. A dead token must not be resent (that is what earns
     // the 429 that blanks the gauges), and an auth wait must not inherit a

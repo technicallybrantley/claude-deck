@@ -364,6 +364,31 @@ regression:
 - **Capturing a rollover is timing, not speed.** `scheduleResetPoll()` fires one
   well-placed request at reset+8s. Do not reintroduce fast bands to chase a
   reset; that is what started all of this.
+- **A key press must never slow the automatic refresh.** Two separate timestamps
+  exist for this: `lastUsageAttempt` (hard 10s floor between *any* two requests)
+  and `lastRoutineAttempt` (the routine cadence clock). Routine pacing reads
+  only the latter. And `widenOn429(priority)` ignores `"user"` 429s entirely.
+  Both rules exist because of the same shipped bug — see below.
+- **Startup costs one request.** `lastRoutineAttempt` is seeded to `Date.now()`,
+  not 0; the socket-open handler already fetches on launch, and a 0 made the
+  loop fire a second request ~10s behind it on every restart.
+
+### The key-press feedback loop (shipped, user-visible, do not recreate)
+
+The nastiest bug in this file so far, because it inverted the user's only
+recourse. Routine pacing originally read `lastUsageAttempt`, and *every* 429
+widened `pollEvery`. So:
+
+1. The number looks stale, so you press the Usage key.
+2. The press fires an extra request, which 429s (it is on top of the cadence).
+3. That 429 widens the interval — 150s, 170s, 190s...
+4. The press also reset `lastUsageAttempt`, pushing the next automatic poll out
+   by a full interval.
+
+**Pressing the key to refresh made the number staler, and holding it down
+starved the automatic refresh indefinitely.** Observed live at 21:47:55 as a
+poll 25s after the previous one — the tell is a gap far shorter than
+`pollEvery`, which only a `"user"` poll can produce.
 
 Selftest asserts recovery directly (`selftest poll cadence:`): baseline 90s, one
 429 → 110s, sustained 429s converge to the 200s cap, 11 clean polls return to
