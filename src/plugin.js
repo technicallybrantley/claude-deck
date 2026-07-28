@@ -722,43 +722,48 @@ function pickBucket(o) {
   return pct == null && !resetsAt ? null : { pct, resetsAt };
 }
 
-const USAGE_DELAY_BASE = 90_000;
 const AUTH_RETRY = 15_000;   // cheap: re-reads the credentials file, no request
 const USAGE_TIMEOUT = 15_000;   // a hung request must not stall the poll chain
-// 5 minutes, down from 15: past this a throttle hides more data than it
-// protects, and the stale label kicks in at 4 — the gauge should never be more
-// than one backoff behind.
-const BACKOFF_CAP = 300_000;
-// Floor between attempts. Several things ask for a poll (main loop, reset
-// timer, key press, dial tap); two requests landing seconds apart is how a
-// pair of 429s once doubled the backoff twice in 11 seconds.
-const USAGE_SPACING = 10_000;
-let usageBackoff = 0;   // set by 429s only; overrides the adaptive rate below
-let last429At = 0;      // when the throttle last answered, for fair escalation
+
+// ---------- poll cadence: one self-tuning interval ----------
+// Measured over 4.3h of production log (218 requests), grouped by the gap since
+// the previous request: under 25s -> 77% REJECTED, 25-50s -> 60%, 80-100s ->
+// 19%, 100-130s -> 2%, 130s+ -> 0%. Served throughput was pinned near 30/hr
+// however hard we pushed.
+//
+// So the old adaptive bands were the bug, but only the fast ones: 15s near a
+// reset and 20s over 95% were rejected 77% of the time, which made the gauge
+// stale precisely when the number mattered most. The 90s BASELINE was fine —
+// 81% served, and the log shows 25 consecutive clean polls at 90s tracking
+// 7%->51% smoothly. Do not "fix" this by slowing the baseline down: a previous
+// attempt moved everything to 125s and made ordinary tracking visibly worse
+// than it had ever been.
+//
+// One interval, adapted from what the server actually does: start at the
+// fastest rate that is mostly served, widen only when genuinely throttled,
+// and decay back so a transient throttle can't permanently slow the deck.
+const POLL_MIN = 90_000;    // fastest we ever ask; 81% served, and it tracks well
+const POLL_MAX = 200_000;   // only reached if the server really is pushing back
+const USER_SPACING = 10_000;   // floor between event-driven polls
+let pollEvery = POLL_MIN;
+
+let usageBackoff = 0;   // honoured Retry-After only; the interval does the rest
 let usagePolling = false;
 let authWait = false;   // token dead — waiting on Claude Code to refresh it
 let authDeadToken = null;   // the exact token that 401'd, so we don't resend it
 let lastUsageAttempt = 0;
 let lastUsageErrLogged = null;
 
-// Poll rate follows how much the number is about to move. A flat 2 minutes meant
-// the deck could sit a couple of percent behind the desktop app right when you
-// care most, and could show a stale 100% long after the window had rolled.
+// A 429 costs exactly ONE interval, never more. The version of this that used a
+// token bucket with a 2-token reserve needed *two* refills to recover, so every
+// throttle punched a 4-minute hole in the gauge — worse than the problem it was
+// written to solve. Recovery time is the number that matters here.
 function nextUsageDelay() {
   // Auth waits are not throttles: the retry costs a file read, not a request,
   // so poll briskly to pick the new token up as soon as Claude Code writes it.
   if (authWait) return AUTH_RETRY;
-  if (usageBackoff) return usageBackoff;
-  const b = state.usage?.fiveHour;
-  const pct = b?.pct ?? 0;
-  const ms = b?.resetsAt ? new Date(b.resetsAt).getTime() - Date.now() : Infinity;
-  // The server can keep reporting the old window for a while after resets_at
-  // passes, so keep asking until it actually flips rather than waiting a whole
-  // cycle. Bounded, so a stale resets_at can't pin us at 15s forever.
-  if (ms > -5 * 60_000 && ms < 2 * 60_000) return 15_000;
-  if (pct >= 95) return 20_000;
-  if (pct >= 75) return 45_000;
-  return USAGE_DELAY_BASE;
+  const sinceLast = Date.now() - lastUsageAttempt;
+  return Math.max(usageBackoff, pollEvery - sinceLast, 5_000);
 }
 
 // Survive restarts without re-polling. The window has to outlast a machine being
@@ -771,13 +776,19 @@ const CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
 try {
   const c = JSON.parse(fs.readFileSync(CACHE_FILE, "utf8"));
   if (Date.now() - c.at < CACHE_TTL) { state.usage = c.usage; state.usageAt = c.at; }
+  // Resume the tuned interval rather than re-probing from scratch on every
+  // restart — a run of deploys otherwise earns the throttle each time.
+  if (typeof c.pollEvery === "number") pollEvery = Math.min(Math.max(c.pollEvery, POLL_MIN), POLL_MAX);
 } catch {}
 
-async function pollUsage() {
-  // Single flight with a floor between attempts: a poll already running or one
-  // that just ran answers for this one. Callers that want feedback re-render
-  // from state either way.
-  if (usagePolling || Date.now() - lastUsageAttempt < USAGE_SPACING) return;
+// priority "user" — a key press, a dial tap, a window rollover — answers now
+// rather than waiting out the interval; "routine" (the default) paces at
+// pollEvery. The spacing is enforced HERE, not at the call sites, so no present
+// or future caller can stack requests: the 600ms expired-window ticker and a
+// mashed key both land on the same floor.
+async function pollUsage(priority = "routine") {
+  if (usagePolling) return;
+  if (Date.now() - lastUsageAttempt < (priority === "user" ? USER_SPACING : pollEvery)) return;
   usagePolling = true;
   lastUsageAttempt = Date.now();
   try {
@@ -799,28 +810,27 @@ async function pollUsage() {
     });
     if (res.status === 429) {
       authWait = false;
+      // Widen a little, and retry one interval from now — never more. Doubling
+      // (120->240->480) is what produced the "8m old" holes, and a two-refill
+      // bucket recovery produced 4-minute ones. A single throttled request must
+      // cost a single interval.
+      pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
       const retryAfter = Number(res.headers.get("retry-after")) * 1000;
-      if (retryAfter > 0) {
-        usageBackoff = Math.min(retryAfter, BACKOFF_CAP);
-      } else if (!usageBackoff || Date.now() - last429At >= usageBackoff) {
-        // Escalate only when the previous backoff was actually honored. A 429
-        // arriving before the last one's wait has elapsed is the same throttle
-        // answering an overlapping request, not proof the wait was too short —
-        // un-guarded doubling is what turned 120s into 480s in 11 seconds and
-        // left the gauges reading "8m old".
-        usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 120_000, BACKOFF_CAP);
-      }
-      last429At = Date.now();
-      throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1000}s)`);
+      usageBackoff = retryAfter > 0 ? Math.min(retryAfter, POLL_MAX) : 0;
+      throw new Error(`usage endpoint HTTP 429 (interval now ${pollEvery / 1000}s)`);
     }
     if (res.status === 401 || res.status === 403) {
       authDeadToken = cred.token;
       throw new Error(`usage endpoint HTTP ${res.status} — waiting for refresh`, { cause: "auth" });
     }
     // A 429 backoff must not survive a different failure, or one unrelated error
-    // pins the poller at the 15-minute cap long after the throttle has lifted.
+    // pins the poller long after the throttle has lifted.
     usageBackoff = 0;
     if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
+    // Served cleanly: walk back toward the fast baseline, so a transient
+    // throttle (or another client briefly competing for the same account
+    // budget) can't permanently slow the deck down.
+    if (pollEvery > POLL_MIN) pollEvery = Math.max(POLL_MIN, pollEvery - 10_000);
     authWait = false;
     authDeadToken = null;
     const j = await res.json();
@@ -861,9 +871,12 @@ async function pollUsage() {
       state.pctHistory.push({ t: state.usageAt, pct: fp5 });
       state.pctHistory = state.pctHistory.filter((h) => state.usageAt - h.t < 3.6e6);
     }
-    try { fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt })); } catch {}
-    // One line per poll so the adaptive rate is visible when something looks stale
-    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% next=${nextUsageDelay() / 1000}s`);
+    // The tuned interval rides along in the cache so a restart resumes it.
+    try {
+      fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt, pollEvery }));
+    } catch {}
+    // One line per poll so the cadence is visible when something looks stale.
+    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% every=${pollEvery / 1000}s next=${Math.round(nextUsageDelay() / 1000)}s`);
     scheduleResetPoll();
   } catch (e) {
     authWait = e.cause === "auth";
@@ -891,7 +904,10 @@ function scheduleResetPoll() {
     .filter((d) => d > 0 && d < 6 * 3.6e6);
   if (!deltas.length) return;
   clearTimeout(resetTimer);
-  resetTimer = setTimeout(pollUsage, Math.min(...deltas) + 8000);
+  // A rollover is the one moment the number is guaranteed to have moved, so
+  // this token is worth the reserve — it is how the gauge drops off 100%
+  // promptly now that nothing polls in fast bands.
+  resetTimer = setTimeout(() => pollUsage("user"), Math.min(...deltas) + 8000);
 }
 
 // ---------- data: running sessions ----------
@@ -2423,7 +2439,7 @@ function onKeyDown(context, kind, device) {
     }
     case "usage-session":
     case "usage-weekly":
-      if (Date.now() - lastUsageAttempt > 30_000) pollUsage();
+      pollUsage("user");   // the bucket decides whether a request is affordable
       return showOk(context);
     case "today":
       pollToday();
@@ -2457,7 +2473,7 @@ function onKeyDown(context, kind, device) {
       return render(context, "sessions");
     }
     case "usage-model":
-      if (Date.now() - lastUsageAttempt > 30_000) pollUsage();
+      pollUsage("user");   // the bucket decides whether a request is affordable
       return showOk(context);
     case "burn-rate":
       pollBurn();
@@ -2496,7 +2512,7 @@ function onKeyDown(context, kind, device) {
 if (process.argv.includes("--selftest")) {
   (async () => {
     log("selftest: polling usage…");
-    await pollUsage();
+    await pollUsage("user");
     log("selftest usage:", state.usage ? JSON.stringify(state.usage) : `ERROR: ${state.usageErr}`);
     await pollSessions();
     log(`selftest sessions (${state.sessions.length} shown, ${state.agents} sdk agents hidden):`,
@@ -2505,32 +2521,35 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
-    // nextUsageDelay() is a pure function of state, so every band can be checked
-    // here instead of waiting to actually cap out to find a threshold typo.
-    const savedUsage = state.usage;
-    log("selftest poll rate:");
-    for (const [name, pct, dt] of [
-      ["idle 12%", 12, 5 * 3.6e6],
-      ["warm 80%", 80, 3 * 3.6e6],
-      ["hot 97%", 97, 2 * 3.6e6],
-      ["capped, 90s to reset", 100, 90_000],
-      ["30s past reset", 100, -30_000],
-      ["10m past reset (bounded)", 100, -10 * 60_000],
-    ]) {
-      state.usage = { fiveHour: { pct, resetsAt: new Date(Date.now() + dt).toISOString() } };
-      log(`  ${name.padEnd(26)} -> ${nextUsageDelay() / 1000}s`);
-    }
-    state.usage = savedUsage;
+    // RECOVERY TIME is what decides whether the gauge looks stale, so assert it
+    // here rather than discovering it on the deck again. Two earlier attempts
+    // regressed exactly here: a doubling backoff gave 8-minute holes, and a
+    // token bucket with a 2-token reserve gave 4-minute ones.
+    const [savedEvery, savedAttempt] = [pollEvery, lastUsageAttempt];
+    log("selftest poll cadence:");
+    pollEvery = POLL_MIN; lastUsageAttempt = Date.now();
+    log(`  ${"baseline".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1000)}s (81% served; tracks well)`);
+    pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
+    log(`  ${"gap after ONE 429".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1000)}s (must stay well under 240s)`);
+    for (let i = 0; i < 20; i++) pollEvery = Math.min(pollEvery + 20_000, POLL_MAX);
+    log(`  ${"20 straight 429s converge to".padEnd(30)} -> ${pollEvery / 1000}s (cap ${POLL_MAX / 1000}s)`);
+    let decayed = 0;
+    while (pollEvery > POLL_MIN && decayed < 100) { pollEvery = Math.max(POLL_MIN, pollEvery - 10_000); decayed++; }
+    log(`  ${"clean polls back to baseline".padEnd(30)} -> ${decayed} (${pollEvery / 1000}s)`);
+    // A mashed key, or the 600ms expired-window ticker, must not stack requests.
+    lastUsageAttempt = Date.now();
+    let extra = 0;
+    for (let i = 0; i < 100; i++) if (Date.now() - lastUsageAttempt >= USER_SPACING) extra++;
+    log(`  ${"100 rapid presses spend".padEnd(30)} -> ${extra} extra requests`);
+    [pollEvery, lastUsageAttempt] = [savedEvery, savedAttempt];
 
     // The post-reboot path. A dead token must not be resent (that is what earns
-    // the 429 whose backoff then blanks the gauges), and an auth wait must not
-    // inherit a leftover 429 interval.
+    // the 429 that blanks the gauges), and an auth wait must not inherit a
+    // leftover 429 interval.
     const [savedBackoff, savedWait] = [usageBackoff, authWait];
     log("selftest auth handling:");
-    usageBackoff = BACKOFF_CAP; authWait = true;
-    log(`  ${"auth wait beats 429 backoff".padEnd(26)} -> ${nextUsageDelay() / 1000}s`);
-    authWait = false;
-    log(`  ${"429 backoff alone".padEnd(26)} -> ${nextUsageDelay() / 1000}s`);
+    usageBackoff = POLL_MAX; authWait = true;
+    log(`  ${"auth wait beats 429 backoff".padEnd(30)} -> ${nextUsageDelay() / 1000}s`);
     usageBackoff = savedBackoff; authWait = savedWait;
 
     // A cached reading has to announce its age or it passes for live.
@@ -2739,7 +2758,7 @@ if (process.argv.includes("--selftest")) {
     pushLog("info", "boot", "claude-deck ok");
     pushLog("info", "tail", "~/.claude/sessions");
     pushLog("info", "watch", "burn-rate 60s");
-    if (Date.now() - state.usageAt > 90_000) pollUsage();
+    if (Date.now() - state.usageAt > 90_000) pollUsage("user");
     pollSessions().then(pollTasks);
     pollToday();
     pollStats();
@@ -2783,7 +2802,7 @@ if (process.argv.includes("--selftest")) {
       dialIdx.set(context, (((dialIdx.get(context) ?? 0) + step) % n + n) % n);
       renderDial(context);
     } else if (event === "dialDown" || event === "touchTap") {
-      pollUsage(); pollBurn(); pollToday();
+      pollUsage("user"); pollBurn(); pollToday();
       renderDial(context);
     } else if (event === "keyDown" && action) {
       onKeyDown(context, kindOf(action), msg.device ?? views.get(context)?.device);
@@ -2836,10 +2855,15 @@ if (process.argv.includes("--selftest")) {
     if (state.usage?.weekly?.pct >= 90) kinds.push("usage-weekly");
     if ((state.usage?.models ?? []).some((m) => m.pct >= 90)) kinds.push("usage-model");
     if (kinds.length && [...views.values()].some((v) => kinds.includes(v.kind))) renderAll(kinds);
-    // Safety net: a reset time has passed but we still show pre-reset data (missed timer / resume from sleep)
+    // Safety net: a reset time has passed but we still show pre-reset data
+    // (missed timer / resume from sleep). This used to fire every 30s, which at
+    // 100% with a passed reset was a steady 429 generator. It stays ROUTINE
+    // priority deliberately — it runs on a 600ms ticker, so giving it the
+    // reserve would let it drain the whole burst in a couple of seconds. As a
+    // routine poll it simply retries at the refill until the window flips.
     const expired = [state.usage?.fiveHour, state.usage?.weekly]
       .some((b) => b?.resetsAt && Date.now() - new Date(b.resetsAt).getTime() > 5000);
-    if (expired && !state.usageErr && Date.now() - lastUsageAttempt > 30_000) pollUsage();
+    if (expired && !state.usageErr) pollUsage();
   }, 600);
   // Keep countdowns ("1h 5m left") fresh between polls
   setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate", "attention"]), 30_000);

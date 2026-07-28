@@ -4345,13 +4345,13 @@ function pickBucket(o) {
   const resetsAt = o.resets_at ?? o.resetsAt ?? null;
   return pct == null && !resetsAt ? null : { pct, resetsAt };
 }
-var USAGE_DELAY_BASE = 9e4;
 var AUTH_RETRY = 15e3;
 var USAGE_TIMEOUT = 15e3;
-var BACKOFF_CAP = 3e5;
-var USAGE_SPACING = 1e4;
+var POLL_MIN = 9e4;
+var POLL_MAX = 2e5;
+var USER_SPACING = 1e4;
+var pollEvery = POLL_MIN;
 var usageBackoff = 0;
-var last429At = 0;
 var usagePolling = false;
 var authWait = false;
 var authDeadToken = null;
@@ -4359,14 +4359,8 @@ var lastUsageAttempt = 0;
 var lastUsageErrLogged = null;
 function nextUsageDelay() {
   if (authWait) return AUTH_RETRY;
-  if (usageBackoff) return usageBackoff;
-  const b = state.usage?.fiveHour;
-  const pct = b?.pct ?? 0;
-  const ms = b?.resetsAt ? new Date(b.resetsAt).getTime() - Date.now() : Infinity;
-  if (ms > -5 * 6e4 && ms < 2 * 6e4) return 15e3;
-  if (pct >= 95) return 2e4;
-  if (pct >= 75) return 45e3;
-  return USAGE_DELAY_BASE;
+  const sinceLast = Date.now() - lastUsageAttempt;
+  return Math.max(usageBackoff, pollEvery - sinceLast, 5e3);
 }
 var CACHE_TTL = 12 * 36e5;
 var CACHE_FILE = path.join(PLUGIN_DIR, "usage-cache.json");
@@ -4376,10 +4370,12 @@ try {
     state.usage = c.usage;
     state.usageAt = c.at;
   }
+  if (typeof c.pollEvery === "number") pollEvery = Math.min(Math.max(c.pollEvery, POLL_MIN), POLL_MAX);
 } catch {
 }
-async function pollUsage() {
-  if (usagePolling || Date.now() - lastUsageAttempt < USAGE_SPACING) return;
+async function pollUsage(priority = "routine") {
+  if (usagePolling) return;
+  if (Date.now() - lastUsageAttempt < (priority === "user" ? USER_SPACING : pollEvery)) return;
   usagePolling = true;
   lastUsageAttempt = Date.now();
   try {
@@ -4397,14 +4393,10 @@ async function pollUsage() {
     });
     if (res.status === 429) {
       authWait = false;
+      pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
       const retryAfter = Number(res.headers.get("retry-after")) * 1e3;
-      if (retryAfter > 0) {
-        usageBackoff = Math.min(retryAfter, BACKOFF_CAP);
-      } else if (!usageBackoff || Date.now() - last429At >= usageBackoff) {
-        usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 12e4, BACKOFF_CAP);
-      }
-      last429At = Date.now();
-      throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1e3}s)`);
+      usageBackoff = retryAfter > 0 ? Math.min(retryAfter, POLL_MAX) : 0;
+      throw new Error(`usage endpoint HTTP 429 (interval now ${pollEvery / 1e3}s)`);
     }
     if (res.status === 401 || res.status === 403) {
       authDeadToken = cred.token;
@@ -4412,6 +4404,7 @@ async function pollUsage() {
     }
     usageBackoff = 0;
     if (!res.ok) throw new Error(`usage endpoint HTTP ${res.status}`);
+    if (pollEvery > POLL_MIN) pollEvery = Math.max(POLL_MIN, pollEvery - 1e4);
     authWait = false;
     authDeadToken = null;
     const j = await res.json();
@@ -4452,10 +4445,10 @@ async function pollUsage() {
       state.pctHistory = state.pctHistory.filter((h) => state.usageAt - h.t < 36e5);
     }
     try {
-      fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt }));
+      fs.writeFileSync(CACHE_FILE, JSON.stringify({ usage: state.usage, at: state.usageAt, pollEvery }));
     } catch {
     }
-    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% next=${nextUsageDelay() / 1e3}s`);
+    log(`usage: 5h=${state.usage.fiveHour?.pct ?? "?"}% wk=${state.usage.weekly?.pct ?? "?"}% every=${pollEvery / 1e3}s next=${Math.round(nextUsageDelay() / 1e3)}s`);
     scheduleResetPoll();
   } catch (e) {
     authWait = e.cause === "auth";
@@ -4474,7 +4467,7 @@ function scheduleResetPoll() {
   const deltas = [state.usage?.fiveHour?.resetsAt, state.usage?.weekly?.resetsAt].filter(Boolean).map((iso) => new Date(iso).getTime() - Date.now()).filter((d) => d > 0 && d < 6 * 36e5);
   if (!deltas.length) return;
   clearTimeout(resetTimer);
-  resetTimer = setTimeout(pollUsage, Math.min(...deltas) + 8e3);
+  resetTimer = setTimeout(() => pollUsage("user"), Math.min(...deltas) + 8e3);
 }
 function pidAlive(pid) {
   try {
@@ -5860,7 +5853,7 @@ function onKeyDown(context, kind, device) {
     }
     case "usage-session":
     case "usage-weekly":
-      if (Date.now() - lastUsageAttempt > 3e4) pollUsage();
+      pollUsage("user");
       return showOk(context);
     case "today":
       pollToday();
@@ -5895,7 +5888,7 @@ function onKeyDown(context, kind, device) {
       return render(context, "sessions");
     }
     case "usage-model":
-      if (Date.now() - lastUsageAttempt > 3e4) pollUsage();
+      pollUsage("user");
       return showOk(context);
     case "burn-rate":
       pollBurn();
@@ -5936,7 +5929,7 @@ function onKeyDown(context, kind, device) {
 if (process.argv.includes("--selftest")) {
   (async () => {
     log("selftest: polling usage\u2026");
-    await pollUsage();
+    await pollUsage("user");
     log("selftest usage:", state.usage ? JSON.stringify(state.usage) : `ERROR: ${state.usageErr}`);
     await pollSessions();
     log(
@@ -5947,27 +5940,31 @@ if (process.argv.includes("--selftest")) {
     log("selftest today:", JSON.stringify(state.today));
     await pollBurn();
     log("selftest burn:", JSON.stringify(state.burn), "eta:", sessionEta());
-    const savedUsage = state.usage;
-    log("selftest poll rate:");
-    for (const [name, pct, dt] of [
-      ["idle 12%", 12, 5 * 36e5],
-      ["warm 80%", 80, 3 * 36e5],
-      ["hot 97%", 97, 2 * 36e5],
-      ["capped, 90s to reset", 100, 9e4],
-      ["30s past reset", 100, -3e4],
-      ["10m past reset (bounded)", 100, -10 * 6e4]
-    ]) {
-      state.usage = { fiveHour: { pct, resetsAt: new Date(Date.now() + dt).toISOString() } };
-      log(`  ${name.padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
+    const [savedEvery, savedAttempt] = [pollEvery, lastUsageAttempt];
+    log("selftest poll cadence:");
+    pollEvery = POLL_MIN;
+    lastUsageAttempt = Date.now();
+    log(`  ${"baseline".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1e3)}s (81% served; tracks well)`);
+    pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
+    log(`  ${"gap after ONE 429".padEnd(30)} -> ${Math.round(nextUsageDelay() / 1e3)}s (must stay well under 240s)`);
+    for (let i = 0; i < 20; i++) pollEvery = Math.min(pollEvery + 2e4, POLL_MAX);
+    log(`  ${"20 straight 429s converge to".padEnd(30)} -> ${pollEvery / 1e3}s (cap ${POLL_MAX / 1e3}s)`);
+    let decayed = 0;
+    while (pollEvery > POLL_MIN && decayed < 100) {
+      pollEvery = Math.max(POLL_MIN, pollEvery - 1e4);
+      decayed++;
     }
-    state.usage = savedUsage;
+    log(`  ${"clean polls back to baseline".padEnd(30)} -> ${decayed} (${pollEvery / 1e3}s)`);
+    lastUsageAttempt = Date.now();
+    let extra = 0;
+    for (let i = 0; i < 100; i++) if (Date.now() - lastUsageAttempt >= USER_SPACING) extra++;
+    log(`  ${"100 rapid presses spend".padEnd(30)} -> ${extra} extra requests`);
+    [pollEvery, lastUsageAttempt] = [savedEvery, savedAttempt];
     const [savedBackoff, savedWait] = [usageBackoff, authWait];
     log("selftest auth handling:");
-    usageBackoff = BACKOFF_CAP;
+    usageBackoff = POLL_MAX;
     authWait = true;
-    log(`  ${"auth wait beats 429 backoff".padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
-    authWait = false;
-    log(`  ${"429 backoff alone".padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
+    log(`  ${"auth wait beats 429 backoff".padEnd(30)} -> ${nextUsageDelay() / 1e3}s`);
     usageBackoff = savedBackoff;
     authWait = savedWait;
     const savedAt = state.usageAt;
@@ -6146,7 +6143,7 @@ if (process.argv.includes("--selftest")) {
     pushLog("info", "boot", "claude-deck ok");
     pushLog("info", "tail", "~/.claude/sessions");
     pushLog("info", "watch", "burn-rate 60s");
-    if (Date.now() - state.usageAt > 9e4) pollUsage();
+    if (Date.now() - state.usageAt > 9e4) pollUsage("user");
     pollSessions().then(pollTasks);
     pollToday();
     pollStats();
@@ -6201,7 +6198,7 @@ if (process.argv.includes("--selftest")) {
       dialIdx.set(context, (((dialIdx.get(context) ?? 0) + step) % n + n) % n);
       renderDial(context);
     } else if (event === "dialDown" || event === "touchTap") {
-      pollUsage();
+      pollUsage("user");
       pollBurn();
       pollToday();
       renderDial(context);
@@ -6261,7 +6258,7 @@ if (process.argv.includes("--selftest")) {
     if ((state.usage?.models ?? []).some((m) => m.pct >= 90)) kinds.push("usage-model");
     if (kinds.length && [...views.values()].some((v) => kinds.includes(v.kind))) renderAll(kinds);
     const expired = [state.usage?.fiveHour, state.usage?.weekly].some((b) => b?.resetsAt && Date.now() - new Date(b.resetsAt).getTime() > 5e3);
-    if (expired && !state.usageErr && Date.now() - lastUsageAttempt > 3e4) pollUsage();
+    if (expired && !state.usageErr) pollUsage();
   }, 600);
   setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate", "attention"]), 3e4);
 }

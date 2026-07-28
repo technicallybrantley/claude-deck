@@ -288,25 +288,89 @@ means switching to a profile bundled in the `.sdPlugin` folder.
   `manifest.Version`, so **bumping the version rewrites the profile too** — that
   churn in the diff is expected, not the generator being non-deterministic.
 
-## Usage poll rate is adaptive, and the reset is laggy on the server side
+## The reset is laggy on the server side
 
-`nextUsageDelay()` picks the interval from the current reading: 90s normally,
-45s past 75%, 20s past 95%, 15s from two minutes before a rollover until five
-minutes after. A flat interval was wrong in both directions — too slow to track
-the number when it matters, and it left a stale 100% on screen after the window
-had already reopened.
+**`resets_at` passing does not mean the server has rolled the window.** It can
+keep reporting the old utilization for a while afterwards. This is why a
+one-shot `scheduleResetPoll()` at reset + 8s exists, and why the 600ms ticker
+carries a safety net that re-polls while a reset time has passed but the
+reported window hasn't flipped.
 
-The thing worth knowing: **`resets_at` passing does not mean the server has
-rolled the window.** It can keep reporting the old utilization for a while
-afterwards, which is why the fast band extends *past* the reset instead of
-stopping at it, and why it's bounded (five minutes) so a stale `resets_at` can't
-pin the poller at 15s indefinitely. `scheduleResetPoll()` still fires a one-shot
-poll at reset + 8s on top of this.
+That safety net used to fire every 30s, which at 100% with a passed reset was a
+steady 429 generator. It is a ROUTINE-priority poll deliberately: it runs on a
+600ms ticker, so giving it `"user"` priority lets it fire every 10s and spam the
+endpoint. The poll rate is **no longer adaptive to utilization** — see the
+cadence section above for why those fast bands were actively harmful.
 
-429 backoff is now separate state (`usageBackoff`) from the adaptive rate, so a
-throttle can't be mistaken for a normal interval and vice versa. Every successful
-poll logs `usage: 5h=..% wk=..% next=..s` — check that first when the number
-looks stale.
+Every successful poll logs `usage: 5h=..% wk=..% every=..s next=..s` — check
+that first when the number looks stale. `every` is the self-tuned interval; if
+it has climbed toward 200s there are sustained 429s, which usually means
+something else on the account (the desktop app) is drawing from the same
+budget.
+
+## Poll cadence: fast baseline, and RECOVERY TIME is the thing to protect
+
+Three separate attempts to fix "the gauge is stale" regressed it instead. Read
+this section before touching `nextUsageDelay()` or the 429 path.
+
+Measured from 4.3h of production log, 218 requests:
+
+| gap since previous request | rejected |
+|---|---|
+| under 25s | **77%** |
+| 25–50s | 60% |
+| 80–100s | 19% |
+| 100–130s | **2%** |
+| 130s+ | 0% |
+
+Two conclusions, and **both halves matter**:
+
+1. **The fast bands were the bug.** 15s near a reset and 20s over 95% sit far
+   below what the server will serve and were rejected 77% of the time, so the
+   gauge went stale *precisely* when the number mattered most — the exact
+   opposite of what those bands were written to achieve.
+2. **The 90s baseline was fine and must stay fast.** 81% served, and the log
+   shows 25 consecutive clean polls at 90s tracking 7%→51% smoothly.
+
+An attempt that "fixed" this by modelling the server's token bucket and moving
+*everything* to a 125s cadence made ordinary tracking visibly worse than it had
+ever been, and the user noticed within minutes. **Do not slow the baseline down
+to buy a lower 429 rate.** A few 429s at 90s are cheap; a slow baseline is felt
+constantly.
+
+The thing to actually protect is **recovery time — how long a single 429 keeps
+a stale number on screen.** Every regression here has been a recovery-time
+regression:
+
+| attempt | recovery after one 429 | symptom |
+|---|---|---|
+| doubling backoff (120→240→480) | up to 8 min | "8m old" |
+| token bucket, 2-token reserve | 2 refills = **250s** | "4m old", then "5m behind" |
+| current: one adaptive interval | **110s** | — |
+
+`plugin.js` now keeps ONE self-tuning interval (`pollEvery`, `POLL_MIN` 90s,
+`POLL_MAX` 200s). Rules, all load-bearing:
+
+- **A 429 costs exactly one interval, never more.** Widen by 20s, retry once
+  `pollEvery` has passed. No doubling, no multi-step accumulation before the
+  next request is even allowed.
+- **Clean polls decay the interval back to 90s** (10s per success), so a
+  transient throttle — or the desktop app briefly competing for the same
+  account budget — cannot permanently slow the deck down.
+- **Spacing is enforced inside `pollUsage()`, not at call sites**, so no present
+  or future caller can stack requests. `priority: "user"` (key press, dial tap,
+  rollover) bypasses the interval but still honours a 10s floor — the
+  expired-window safety net runs on a 600ms ticker and would otherwise spam.
+- **Capturing a rollover is timing, not speed.** `scheduleResetPoll()` fires one
+  well-placed request at reset+8s. Do not reintroduce fast bands to chase a
+  reset; that is what started all of this.
+
+Selftest asserts recovery directly (`selftest poll cadence:`): baseline 90s, one
+429 → 110s, sustained 429s converge to the 200s cap, 11 clean polls return to
+baseline, and 100 rapid key presses spend 0 extra requests.
+
+The interval persists in `usage-cache.json` (`pollEvery`) so a restart resumes
+the tuned value instead of re-probing.
 
 ## The "8m old" incident: overlapping pollers must not compound the backoff
 
