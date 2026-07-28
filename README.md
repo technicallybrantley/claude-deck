@@ -93,7 +93,7 @@ which spends its press on reacting, and wakes up for a few seconds to do it.
 
 ## Requirements
 
-- Windows, Stream Deck software 6.5+ (Node.js plugin runtime)
+- Windows 10+ or macOS 13+, Stream Deck software 6.5+ (Node.js plugin runtime)
 - [Claude Code](https://claude.com/claude-code) signed in (provides `~/.claude/.credentials.json`, session and activity data)
 - Claude Desktop (optional, for the launcher/quick-chat keys)
 
@@ -101,7 +101,7 @@ which spends its press on reacting, and wakes up for a few seconds to do it.
 
 1. Download/clone this repo.
 2. Close the Stream Deck app.
-3. Copy `com.technicallybrantley.claude-deck.sdPlugin` into `%APPDATA%\Elgato\StreamDeck\Plugins\`.
+3. Copy `com.technicallybrantley.claude-deck.sdPlugin` into `%APPDATA%\Elgato\StreamDeck\Plugins\` (Windows) or `~/Library/Application Support/com.elgato.StreamDeck/Plugins/` (macOS).
 4. Start the Stream Deck app — the actions appear under the **Claude Deck** category.
 5. Optional: double-click `Claude.streamDeckProfile` to import a ready-made Stream Deck XL profile.
 

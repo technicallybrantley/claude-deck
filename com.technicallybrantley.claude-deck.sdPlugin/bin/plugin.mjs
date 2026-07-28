@@ -2272,7 +2272,7 @@ var require_websocket = __commonJS({
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
-    var { URL } = __require("url");
+    var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
     var Receiver2 = require_receiver();
     var Sender2 = require_sender();
@@ -2773,11 +2773,11 @@ var require_websocket = __commonJS({
         );
       }
       let parsedUrl;
-      if (address instanceof URL) {
+      if (address instanceof URL2) {
         parsedUrl = address;
       } else {
         try {
-          parsedUrl = new URL(address);
+          parsedUrl = new URL2(address);
         } catch {
           throw new SyntaxError(`Invalid URL: ${address}`);
         }
@@ -2914,7 +2914,7 @@ var require_websocket = __commonJS({
           req.abort();
           let addr;
           try {
-            addr = new URL(location, address);
+            addr = new URL2(location, address);
           } catch (e) {
             const err = new SyntaxError(`Invalid URL: ${location}`);
             emitErrorAndClose(websocket, err);
@@ -3734,8 +3734,10 @@ var TASKS_DIR = path.join(CLAUDE_DIR, "tasks");
 var USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 var githubDir = path.join(os.homedir(), "Documents", "GitHub");
 var DEFAULT_CODE_DIR = fs.existsSync(githubDir) ? githubDir : os.homedir();
+var IS_MAC = process.platform === "darwin";
+var MAC_CLAUDE_BUNDLE = "com.anthropic.claudefordesktop";
 var desktopAppId = "shell:AppsFolder\\Claude_pzs8sxrjxfjjc!Claude";
-execFile(
+if (!IS_MAC) execFile(
   "powershell.exe",
   [
     "-NoProfile",
@@ -3792,11 +3794,11 @@ function gaugeKey(label, pct, sub, pulsePhase = null) {
   const pulse = pulsePhase == null ? "" : `<rect x="4" y="4" width="136" height="136" rx="16" fill="none" stroke="${C.bad}" stroke-width="6" opacity="${[0.2, 0.55, 0.95][pulsePhase % 3]}"/>`;
   return svgWrap(`
     ${pulse}
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(label)}</text>
-    <text x="72" y="78" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="${has ? 46 : 34}" font-weight="700" fill="${has ? col : C.dim}">${has ? Math.round(p) + "%" : "--"}</text>
+    <text x="14" y="27" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(label)}</text>
+    <text x="72" y="78" text-anchor="middle" font-family="${UI}" font-size="${has ? 46 : 34}" font-weight="700" fill="${has ? col : C.dim}">${has ? Math.round(p) + "%" : "--"}</text>
     <rect x="14" y="90" width="116" height="12" rx="6" fill="${C.track}"/>
     ${has ? `<rect x="14" y="90" width="${Math.max(8, 116 * p / 100)}" height="12" rx="6" fill="${col}"/>` : ""}
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="72" y="128" text-anchor="middle" font-family="${UI}" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
 var CAP_5H = 5 * 36e5;
 var CAP_7D = 7 * 864e5;
@@ -3837,10 +3839,10 @@ function clockKey(hours, nowHour) {
   const busiest = hours.indexOf(Math.max(...hours));
   const h12 = (n) => `${n % 12 === 0 ? 12 : n % 12}${n < 12 ? "am" : "pm"}`;
   return svgWrap(`
-    <text x="72" y="20" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">RHYTHM</text>
+    <text x="72" y="20" text-anchor="middle" font-family="${UI}" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">RHYTHM</text>
     ${out}
     <circle cx="${cx}" cy="${cy}" r="7" fill="${C.track}"/>
-    <text x="72" y="139" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">busiest ${h12(busiest)}</text>`);
+    <text x="72" y="139" text-anchor="middle" font-family="${UI}" font-size="15" fill="${C.dim}">busiest ${h12(busiest)}</text>`);
 }
 function wrapText(str, maxChars, maxLines) {
   const words = String(str ?? "").split(/\s+/).filter(Boolean);
@@ -3864,21 +3866,21 @@ function wrapText(str, maxChars, maxLines) {
 }
 function attentionKey(a, hooksOn, phase) {
   if (!hooksOn) return svgWrap(`
-    <text x="72" y="60" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">ATTENTION</text>
-    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">hooks off</text>
-    <text x="72" y="110" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="${C.track}">npm run install-hooks</text>`);
+    <text x="72" y="60" text-anchor="middle" font-family="${UI}" font-size="17" font-weight="600" fill="${C.dim}">ATTENTION</text>
+    <text x="72" y="88" text-anchor="middle" font-family="${UI}" font-size="15" fill="${C.dim}">hooks off</text>
+    <text x="72" y="110" text-anchor="middle" font-family="${UI}" font-size="12" fill="${C.track}">npm run install-hooks</text>`);
   if (!a) return svgWrap(`
     <circle cx="72" cy="66" r="26" fill="none" stroke="${C.ok}" stroke-width="6"/>
     <path d="M60 66 l8 9 l16 -19" fill="none" stroke="${C.ok}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">all clear</text>`);
+    <text x="72" y="122" text-anchor="middle" font-family="${UI}" font-size="17" font-weight="600" fill="${C.dim}">all clear</text>`);
   const secs = Math.max(0, Math.round((Date.now() - a.at) / 1e3));
   const wait = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
   const what = { permission_prompt: "permission", idle_prompt: "waiting", agent_needs_input: "needs input", elicitation_dialog: "input needed" }[a.kind] ?? a.kind;
   return svgWrap(`
     <rect x="3" y="3" width="138" height="138" rx="16" fill="none" stroke="${C.bad}" stroke-width="6" opacity="${[0.3, 0.65, 1][phase % 3]}"/>
-    <text x="72" y="40" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="1" fill="${C.bad}">NEEDS YOU</text>
-    <text x="72" y="72" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" fill="${C.text}">${esc(what)}</text>
-    <text x="72" y="98" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(String(a.name).slice(0, 16))}</text>
+    <text x="72" y="40" text-anchor="middle" font-family="${UI}" font-size="15" font-weight="700" letter-spacing="1" fill="${C.bad}">NEEDS YOU</text>
+    <text x="72" y="72" text-anchor="middle" font-family="${UI}" font-size="20" font-weight="700" fill="${C.text}">${esc(what)}</text>
+    <text x="72" y="98" text-anchor="middle" font-family="${UI}" font-size="15" fill="${C.dim}">${esc(String(a.name).slice(0, 16))}</text>
     <text x="72" y="126" text-anchor="middle" font-family="${MONO}" font-size="18" font-weight="700" fill="${C.warn}">${wait}</text>`, false);
 }
 function taskKey(t) {
@@ -3886,12 +3888,12 @@ function taskKey(t) {
   const label = t.activeForm ?? t.subject ?? "\u2014";
   const lines = wrapText(label, 17, 3);
   const frac = t.total ? t.done / t.total : 0;
-  const body = lines.map((ln, i) => `<text x="12" y="${58 + i * 22}" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="${C.text}">${esc(ln)}</text>`).join("");
+  const body = lines.map((ln, i) => `<text x="12" y="${58 + i * 22}" font-family="${UI}" font-size="16" font-weight="600" fill="${C.text}">${esc(ln)}</text>`).join("");
   return svgWrap(`
     <rect x="0" y="0" width="144" height="34" rx="18" fill="${C.panel}"/>
     <rect x="0" y="17" width="144" height="17" fill="${C.panel}"/>
-    <text x="12" y="24" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${t.blocked ? C.warn : C.accent}">DOING</text>
-    <text x="132" y="24" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="14" fill="${C.dim}">${t.done}/${t.total}</text>
+    <text x="12" y="24" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${t.blocked ? C.warn : C.accent}">DOING</text>
+    <text x="132" y="24" text-anchor="end" font-family="${UI}" font-size="14" fill="${C.dim}">${t.done}/${t.total}</text>
     ${body}
     <rect x="12" y="126" width="120" height="8" rx="4" fill="${C.track}"/>
     <rect x="12" y="126" width="${Math.max(4, 120 * frac).toFixed(1)}" height="8" rx="4" fill="${C.ok}"/>`);
@@ -3899,30 +3901,30 @@ function taskKey(t) {
 function linesKey(title, rows, accent = C.accent, note = null) {
   const rowSvg = rows.map((r, i) => {
     const y = 62 + i * 31;
-    return `<text x="14" y="${y}" font-family="Segoe UI, sans-serif" font-size="${r.big ? 28 : 20}" font-weight="${r.big ? 700 : 600}" fill="${r.color ?? C.text}">${esc(r.text)}</text>`;
+    return `<text x="14" y="${y}" font-family="${UI}" font-size="${r.big ? 28 : 20}" font-weight="${r.big ? 700 : 600}" fill="${r.color ?? C.text}">${esc(r.text)}</text>`;
   }).join("");
   return svgWrap(`
     <rect x="0" y="0" width="144" height="34" rx="18" fill="${C.panel}"/>
     <rect x="0" y="17" width="144" height="17" fill="${C.panel}"/>
-    <text x="14" y="24" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
-    ${note ? `<text x="132" y="24" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="13" fill="${C.dim}">${esc(note)}</text>` : ""}
+    <text x="14" y="24" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
+    ${note ? `<text x="132" y="24" text-anchor="end" font-family="${UI}" font-size="13" fill="${C.dim}">${esc(note)}</text>` : ""}
     ${rowSvg}`);
 }
 function bigCountKey(title, count, sub, subColor, animPhase2 = null, subSize = 17) {
   const dots = animPhase2 == null ? "" : [0, 1, 2].map((i) => `<circle cx="122" cy="${56 + i * 16}" r="${i === animPhase2 ? 4.5 : 3}" fill="${i === animPhase2 ? C.ok : C.track}"/>`).join("");
   return svgWrap(`
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
+    <text x="14" y="27" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
     ${dots}
-    <text x="72" y="96" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="64" font-weight="700" fill="${count > 0 ? C.text : C.dim}">${count}</text>
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="${subSize}" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="72" y="96" text-anchor="middle" font-family="${UI}" font-size="64" font-weight="700" fill="${count > 0 ? C.text : C.dim}">${count}</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${UI}" font-size="${subSize}" fill="${subColor ?? C.dim}">${esc(sub ?? "")}</text>`);
 }
 function burnKey(tokensHour, sub) {
   const has = tokensHour != null;
   return svgWrap(`
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">BURN RATE</text>
-    <text x="72" y="82" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="40" font-weight="700" fill="${has ? C.accent : C.dim}">${has ? fmtNum(tokensHour) : "--"}</text>
-    <text x="72" y="104" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">tok/hr</text>
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="14" y="27" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">BURN RATE</text>
+    <text x="72" y="82" text-anchor="middle" font-family="${UI}" font-size="40" font-weight="700" fill="${has ? C.accent : C.dim}">${has ? fmtNum(tokensHour) : "--"}</text>
+    <text x="72" y="104" text-anchor="middle" font-family="${UI}" font-size="16" fill="${C.dim}">tok/hr</text>
+    <text x="72" y="128" text-anchor="middle" font-family="${UI}" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
 function labelKey(title, label, sub, accent = C.accent) {
   const text = String(label ?? "").trim() || "\u2014";
@@ -3938,11 +3940,11 @@ function labelKey(title, label, sub, accent = C.accent) {
     }
   }
   if (cur && lines.length < 2) lines.push(cur);
-  const lineSvg = lines.slice(0, 2).map((l, i) => `<text x="72" y="${lines.length > 1 ? 68 + i * 27 : 82}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="22" font-weight="700" fill="${C.text}">${esc(l.slice(0, 12))}</text>`).join("");
+  const lineSvg = lines.slice(0, 2).map((l, i) => `<text x="72" y="${lines.length > 1 ? 68 + i * 27 : 82}" text-anchor="middle" font-family="${UI}" font-size="22" font-weight="700" fill="${C.text}">${esc(l.slice(0, 12))}</text>`).join("");
   return svgWrap(`
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
+    <text x="14" y="27" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
     ${lineSvg}
-    <text x="72" y="128" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
+    <text x="72" y="128" text-anchor="middle" font-family="${UI}" font-size="15" fill="${C.dim}">${esc(sub ?? "")}</text>`);
 }
 var CHART_COLS = 8;
 var CHART_ROWS = 4;
@@ -3978,21 +3980,21 @@ function barCellKey(d, row, max, metric) {
   if (row === CHART_ROWS - 1) {
     const a = AXIS_Y - row * KEY;
     out += `<rect x="14" y="${a}" width="116" height="2" rx="1" fill="${d.isToday ? col : C.track}"/>
-      <text x="72" y="${a + 20}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="600" letter-spacing="0.5" fill="${d.isToday ? col : C.dim}">${esc(d.label)}</text>
-      <text x="72" y="${a + 37}" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="700" fill="${C.text}">${fmtNum(v)}</text>`;
+      <text x="72" y="${a + 20}" text-anchor="middle" font-family="${UI}" font-size="15" font-weight="600" letter-spacing="0.5" fill="${d.isToday ? col : C.dim}">${esc(d.label)}</text>
+      <text x="72" y="${a + 37}" text-anchor="middle" font-family="${UI}" font-size="16" font-weight="700" fill="${C.text}">${fmtNum(v)}</text>`;
   }
   return svgWrap(out, false);
 }
 function chartStatKey(title, value, sub, color = C.accent) {
   return svgWrap(`
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
-    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="36" font-weight="700" fill="${color}">${esc(value)}</text>
-    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`, false);
+    <text x="14" y="27" font-family="${UI}" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">${esc(title)}</text>
+    <text x="72" y="88" text-anchor="middle" font-family="${UI}" font-size="36" font-weight="700" fill="${color}">${esc(value)}</text>
+    <text x="72" y="122" text-anchor="middle" font-family="${UI}" font-size="16" fill="${C.dim}">${esc(sub ?? "")}</text>`, false);
 }
 function backCellKey() {
   return svgWrap(`
     <path d="M86 34 L54 68 L86 102" fill="none" stroke="${C.accent}" stroke-width="13" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" letter-spacing="1" fill="${C.text}">BACK</text>`, false);
+    <text x="72" y="130" text-anchor="middle" font-family="${UI}" font-size="20" font-weight="700" letter-spacing="1" fill="${C.text}">BACK</text>`, false);
 }
 function chartOpenKey(days, metric) {
   const vals = days.map((d) => dayVal(d, metric));
@@ -4000,13 +4002,13 @@ function chartOpenKey(days, metric) {
   const bars = days.length ? days.map((d, i) => {
     const h = Math.max(4, Math.round(62 * (dayVal(d, metric) / max)));
     return `<rect x="${13 + i * 17}" y="${102 - h}" width="13" height="${h}" rx="3" fill="${d.isToday ? C.accentHi : C.accent}" opacity="${d.isToday ? 1 : 0.75}"/>`;
-  }).join("") : `<text x="72" y="84" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" fill="${C.dim}">--</text>`;
+  }).join("") : `<text x="72" y="84" text-anchor="middle" font-family="${UI}" font-size="20" fill="${C.dim}">--</text>`;
   const total = vals.reduce((a, b) => a + b, 0);
   return svgWrap(`
-    <text x="14" y="27" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">7 DAYS</text>
+    <text x="14" y="27" font-family="${UI}" font-size="17" font-weight="600" letter-spacing="0.5" fill="${C.dim}">7 DAYS</text>
     ${bars}
     <rect x="13" y="103" width="119" height="2" rx="1" fill="${C.track}"/>
-    <text x="72" y="130" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="700" fill="${C.text}">${fmtNum(total)}${metric === "msgs" ? " msgs" : " tok"}</text>`);
+    <text x="72" y="130" text-anchor="middle" font-family="${UI}" font-size="17" font-weight="700" fill="${C.text}">${fmtNum(total)}${metric === "msgs" ? " msgs" : " tok"}</text>`);
 }
 var RAIN_STEP = 22;
 var RAIN_BH = 16;
@@ -4051,7 +4053,8 @@ function rainCellKey(lc, lr, cols, rows, t, busy, burn) {
     out += sparkAt(72, 72, C.accent, 0.2, 2.2);
   return svgWrap(out, false);
 }
-var MONO = "Cascadia Mono, Consolas, monospace";
+var UI = "Segoe UI, -apple-system, Helvetica Neue, sans-serif";
+var MONO = "Cascadia Mono, Consolas, SF Mono, Menlo, monospace";
 var LOG_MAX = 60;
 var LOG_STYLE = {
   start: { g: "+", c: C.accentHi },
@@ -4308,6 +4311,25 @@ var state = {
   loggedRaw: false
 };
 async function readToken() {
+  if (IS_MAC) {
+    const raw2 = await new Promise((res) => {
+      execFile(
+        "/usr/bin/security",
+        ["find-generic-password", "-s", "Claude Code-credentials", "-a", os.userInfo().username, "-w"],
+        { timeout: 4e3 },
+        (err, out) => res(err ? null : out)
+      );
+    });
+    if (!raw2) return null;
+    let o2;
+    try {
+      o2 = JSON.parse(raw2)?.claudeAiOauth;
+    } catch {
+      return null;
+    }
+    if (!o2?.accessToken) return null;
+    return { token: o2.accessToken, expired: typeof o2.expiresAt === "number" && o2.expiresAt <= Date.now() };
+  }
   const raw = await fsp.readFile(CREDS_FILE, "utf8");
   const o = JSON.parse(raw)?.claudeAiOauth;
   if (!o?.accessToken) return null;
@@ -5559,13 +5581,28 @@ function renderTiles(kind, step) {
     }
   }
 }
-function launchDesktop(context) {
-  const child = spawn("explorer.exe", [desktopAppId], { detached: true, stdio: "ignore" });
+function launch(cmd, args, context) {
+  const child = spawn(cmd, args, { detached: true, stdio: "ignore" });
   child.on("error", () => showAlert(context));
   child.unref();
   showOk(context);
 }
+function osa(script, args, cb) {
+  const p = spawn("osascript", ["-", ...args], { stdio: ["pipe", "ignore", "pipe"] });
+  let err = "";
+  p.stderr.on("data", (d) => {
+    err += String(d);
+  });
+  p.on("error", (e) => cb?.(e));
+  p.on("close", (code) => cb?.(code === 0 ? null : new Error(err.trim() || `osascript exit ${code}`)));
+  p.stdin.end(script);
+}
+function launchDesktop(context) {
+  if (IS_MAC) return launch("open", ["-b", MAC_CLAUDE_BUNDLE], context);
+  return launch("explorer.exe", [desktopAppId], context);
+}
 function quickChat(context) {
+  if (IS_MAC) return launch("open", ["claude://claude.ai/new"], context);
   const ps = `
 Add-Type -Namespace K -Name W -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);';
 [K.W]::keybd_event(0x11,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x12,0,0,[UIntPtr]::Zero); [K.W]::keybd_event(0x20,0,0,[UIntPtr]::Zero);
@@ -5577,12 +5614,52 @@ Start-Sleep -Milliseconds 60;
   showOk(context);
 }
 function openWeb(context) {
-  const child = spawn("cmd.exe", ["/c", "start", "", "https://claude.ai/new"], { detached: true, stdio: "ignore" });
-  child.on("error", () => showAlert(context));
-  child.unref();
-  showOk(context);
+  return openUrl("https://claude.ai/new", context);
+}
+function openUrl(url, context) {
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return showAlert(context);
+  }
+  if (u.protocol !== "http:" && u.protocol !== "https:") return showAlert(context);
+  if (IS_MAC) return launch("open", [u.href], context);
+  return launch("cmd.exe", ["/c", "start", "", u.href], context);
 }
 function openTerminalAt(dir, context) {
+  if (IS_MAC) {
+    const clean = String(dir).replace(/[\r\n]/g, "");
+    const iterm = ["/Applications/iTerm.app", path.join(os.homedir(), "Applications/iTerm.app")].some((a) => fs.existsSync(a));
+    const script = iterm ? `
+on run argv
+  set d to quoted form of (item 1 of argv)
+  tell application id "com.googlecode.iterm2"
+    activate
+    set w to (create window with default profile)
+    tell current session of w to write text ("cd " & d & " && claude")
+  end tell
+end run` : `
+on run argv
+  set d to quoted form of (item 1 of argv)
+  tell application "Terminal"
+    set wasRunning to running
+    activate
+    -- A cold launch already opens a window; targeting it avoids a second one.
+    if wasRunning then
+      do script ("cd " & d & " && claude")
+    else
+      do script ("cd " & d & " && claude") in front window
+    end if
+  end tell
+end run`;
+    return osa(script, [clean], (err) => {
+      if (err) {
+        log("terminal failed:", String(err));
+        showAlert(context);
+      } else showOk(context);
+    });
+  }
   const psFallback = () => {
     const fb = spawn("cmd.exe", ["/c", "start", "", "powershell", "-NoExit", "-Command", `cd '${dir}'; claude`], { detached: true, stdio: "ignore" });
     fb.on("error", () => showAlert(context));
@@ -5596,7 +5673,39 @@ function openTerminalAt(dir, context) {
   wt.unref();
   showOk(context);
 }
+function focusWindowMac(s, context) {
+  if (!s?.pid) return showAlert(context);
+  execFile("ps", ["-o", "tty=", "-p", String(s.pid)], { timeout: 3e3 }, (err, out) => {
+    const tty = String(out ?? "").trim();
+    const iterm = ["/Applications/iTerm.app", path.join(os.homedir(), "Applications/iTerm.app")].some((a2) => fs.existsSync(a2));
+    if (err || !tty || tty === "??" || !iterm) {
+      return launch("open", ["-b", iterm ? "com.googlecode.iterm2" : "com.apple.Terminal"], context);
+    }
+    const script = `
+on run argv
+  set want to "/dev/" & (item 1 of argv)
+  tell application id "com.googlecode.iterm2"
+    repeat with w in windows
+      repeat with t in tabs of w
+        repeat with sess in sessions of t
+          if (tty of sess) is want then
+            activate
+            select w
+            tell w to select t
+            tell t to select sess
+            return "ok"
+          end if
+        end repeat
+      end repeat
+    end repeat
+  end tell
+  error "no session on " & want
+end run`;
+    osa(script, [tty], (e2) => e2 ? showAlert(context) : showOk(context));
+  });
+}
 function focusWindow(s, context) {
+  if (IS_MAC) return focusWindowMac(s, context);
   const target = (String(s.name ?? "").replace(/["'‘’“”]/g, "").slice(0, 40) || path.basename(s.cwd ?? "")).toLowerCase();
   if (!target) return showAlert(context);
   const ps = `
@@ -5612,6 +5721,10 @@ if ($found -eq [IntPtr]::Zero) { exit 1 };
   });
 }
 function sendPrompt(text, enter, context) {
+  if (IS_MAC) {
+    const q = encodeURIComponent(String(text).slice(0, 14e3));
+    return launch("open", [`claude://claude.ai/new?q=${q}`], context);
+  }
   const ps = `
 Set-Clipboard -Value '${String(text).replace(/'/g, "''")}';
 Add-Type -Namespace K -Name W -MemberDefinition '[DllImport("user32.dll")] public static extern void keybd_event(byte k, byte s, uint f, UIntPtr e);';
@@ -5626,10 +5739,16 @@ ${enter ? "Start-Sleep -Milliseconds 200; P 0x0D; R 0x0D;" : ""}`;
   showOk(context);
 }
 function runCustom(command, context) {
-  const child = spawn("cmd.exe", ["/c", "start", "", command], { detached: true, stdio: "ignore" });
-  child.on("error", () => showAlert(context));
-  child.unref();
-  showOk(context);
+  if (IS_MAC) {
+    return osa(`
+on run argv
+  tell application "Terminal"
+    activate
+    do script (item 1 of argv)
+  end tell
+end run`, [String(command)], (err) => err ? showAlert(context) : showOk(context));
+  }
+  return launch("cmd.exe", ["/c", "start", "", command], context);
 }
 function onKeyDown(context, kind, device) {
   switch (kind) {
@@ -5839,7 +5958,7 @@ if (process.argv.includes("--selftest")) {
     const body = (uri) => decodeURIComponent(uri.slice(uri.indexOf(",") + 1)).replace(/^<svg[^>]*>/, "").replace(/<\/svg>$/, "");
     const place = (uri, x, y) => `<svg x="${x}" y="${y}" width="${KEY}" height="${KEY}" viewBox="0 0 ${KEY} ${KEY}">${body(uri)}</svg>`;
     const PITCH = KEY + 8;
-    const label = (x, y, s) => `<text x="${x}" y="${y}" font-family="Segoe UI, sans-serif" font-size="19" fill="#9b96a8">${s}</text>`;
+    const label = (x, y, s) => `<text x="${x}" y="${y}" font-family="${UI}" font-size="19" fill="#9b96a8">${s}</text>`;
     let inner = "", w, h;
     const tile = process.argv.includes("--rain") ? "activity" : argOf("--tile");
     if (process.argv.includes("--cap")) {

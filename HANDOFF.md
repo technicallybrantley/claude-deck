@@ -356,6 +356,53 @@ live config, so it backs up first, identifies its own entries **by the loopback
 URL rather than by position** (a reinstall repairs instead of duplicating), and
 `--remove` reverses it without touching anyone else's hooks. `--dry-run` prints.
 
+## macOS: implemented from research, NOT tested on a Mac
+
+Written on Windows against verified docs. Windows behaviour is unchanged and was
+regression-tested; **every macOS path below is unrun.** Treat the first Mac
+launch as the real test, and check these in roughly this order:
+
+- **The manifest needs its `mac` entry or nothing else matters.** `OS` is
+  required and a Windows-only entry means the plugin does not load at all.
+- **Credentials are not in a file.** Claude Code writes the token to the
+  **Keychain** on macOS and *deletes* `.credentials.json`, so the file path finds
+  nothing and every usage gauge sits dead. `readToken()` shells to
+  `/usr/bin/security find-generic-password -s "Claude Code-credentials"`. That
+  binary is trusted by the item's ACL so it doesn't prompt; with no GUI session
+  it exits non-zero rather than blocking, hence the hard timeout. The service
+  name is corroborated only from the claude-code issue tracker, never from
+  Anthropic docs — it is the most likely thing here to be wrong.
+- **Never synthesise keystrokes.** Quick Chat and Quick Prompt use Anthropic's
+  documented `claude://` scheme via `open`. This is not merely simpler: the Mac
+  quick-entry default is a *double-tap of Option*, which cannot be cleanly
+  synthesised, and WindowServer filters synthetic events before the Carbon
+  hotkey matcher, so a synthesised chord may never reach a global hotkey at all.
+  The scheme also needs no Accessibility grant and never touches the clipboard.
+- **AppleScript is passed on stdin with `on run argv`.** Never build a script by
+  concatenating a path: a directory named `foo"bar` closes the literal and
+  executes ("Escape from AppleScript"). `quoted form of` handles the shell layer.
+  Also strip CR/LF from any path — `do script` is "type this into the shell", so
+  a newline runs a second command however well quoted.
+- **Focus matches on tty, not pid.** The pid in the session file is the `claude`
+  process, not the terminal, so `frontmost of process whose unix id is …` would
+  never match — and it raises an app, not a window. `ps -o tty=` gives the tty;
+  iTerm2 documents `tty` as a session property so the exact tab can be selected.
+  **Terminal.app's `tty of tab` is unverified**, so it only gets activated. If you
+  want to settle it: `osascript -e 'tell application "Terminal" to get properties
+  of tab 1 of window 1'`.
+- **Fonts.** Segoe UI and Cascadia Mono do not exist on macOS. `UI` and `MONO`
+  carry Apple fallbacks; without them every key silently reflows and the layout
+  looks subtly wrong rather than obviously broken.
+- `deploy.sh` is the counterpart to `deploy.ps1`. Plugin dir is
+  `~/Library/Application Support/com.elgato.StreamDeck/Plugins/`. Address the app
+  by bundle id on both sides — its Unix executable is `Elgato Stream Deck` while
+  its display name is `Stream Deck`, and picking the wrong one matches nothing.
+
+`runCustom` is arbitrary code execution by design, same as the Windows
+`cmd /c start`. Fine while the string only comes from the local property
+inspector — but treat the settings store as a trust boundary, because an imported
+or synced profile carrying a command would make it a full RCE.
+
 ## Two different data sources — don't reconcile them
 
 - Session/Weekly/Model gauges hit `GET https://api.anthropic.com/api/oauth/usage`
