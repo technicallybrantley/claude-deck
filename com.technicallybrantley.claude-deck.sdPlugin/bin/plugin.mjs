@@ -3822,7 +3822,25 @@ function capKey(label, resetsAt, windowMs, phase) {
     <text x="72" y="107" text-anchor="middle" font-family="${MONO}" font-size="14" fill="${C.dim}">${live ? "resets " + esc(at) : "resetting"}</text>
     ${bar}`, false);
 }
-function linesKey(title, rows, accent = C.accent) {
+function clockKey(hours, nowHour) {
+  const cx = 72, cy = 82, r0 = 14, rMax = 50;
+  const peak = Math.max(1, ...hours);
+  let out = "";
+  for (let h = 0; h < 24; h++) {
+    const a = h / 24 * Math.PI * 2 - Math.PI / 2;
+    const r1 = Math.max(r0 + 3, r0 + (rMax - r0) * (hours[h] / peak));
+    const live = h === nowHour;
+    out += `<line x1="${(cx + Math.cos(a) * r0).toFixed(1)}" y1="${(cy + Math.sin(a) * r0).toFixed(1)}" x2="${(cx + Math.cos(a) * r1).toFixed(1)}" y2="${(cy + Math.sin(a) * r1).toFixed(1)}" stroke="${live ? C.ok : hours[h] ? C.accent : C.track}" stroke-width="${live ? 7 : 5}" stroke-linecap="round"/>`;
+  }
+  const busiest = hours.indexOf(Math.max(...hours));
+  const h12 = (n) => `${n % 12 === 0 ? 12 : n % 12}${n < 12 ? "am" : "pm"}`;
+  return svgWrap(`
+    <text x="72" y="20" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" letter-spacing="0.5" fill="${C.dim}">RHYTHM</text>
+    ${out}
+    <circle cx="${cx}" cy="${cy}" r="7" fill="${C.track}"/>
+    <text x="72" y="139" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">busiest ${h12(busiest)}</text>`);
+}
+function linesKey(title, rows, accent = C.accent, note = null) {
   const rowSvg = rows.map((r, i) => {
     const y = 62 + i * 31;
     return `<text x="14" y="${y}" font-family="Segoe UI, sans-serif" font-size="${r.big ? 28 : 20}" font-weight="${r.big ? 700 : 600}" fill="${r.color ?? C.text}">${esc(r.text)}</text>`;
@@ -3831,6 +3849,7 @@ function linesKey(title, rows, accent = C.accent) {
     <rect x="0" y="0" width="144" height="34" rx="18" fill="${C.panel}"/>
     <rect x="0" y="17" width="144" height="17" fill="${C.panel}"/>
     <text x="14" y="24" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${accent}">${esc(title)}</text>
+    ${note ? `<text x="132" y="24" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="13" fill="${C.dim}">${esc(note)}</text>` : ""}
     ${rowSvg}`);
 }
 function bigCountKey(title, count, sub, subColor, animPhase2 = null, subSize = 17) {
@@ -4221,6 +4240,9 @@ var state = {
   // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
+  stats: null,
+  // long history from stats-cache.json — see pollStats()
+  statsAt: 0,
   loggedRaw: false
 };
 async function readToken() {
@@ -4399,6 +4421,33 @@ var localDay = (ts) => {
   const d = new Date(ts);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+async function pollStats() {
+  try {
+    const j = JSON.parse(await fsp.readFile(STATS_CACHE, "utf8"));
+    const days = (Array.isArray(j.dailyActivity) ? j.dailyActivity : []).filter((d) => d && typeof d.date === "string").sort((a, b) => a.date.localeCompare(b.date));
+    const hours = Array.from({ length: 24 }, (_, h) => Number(j.hourCounts?.[h] ?? j.hourCounts?.[String(h)] ?? 0));
+    const models = Object.entries(j.modelUsage ?? {}).map(([id, m]) => ({
+      id,
+      tokens: (m.inputTokens ?? 0) + (m.outputTokens ?? 0) + (m.cacheReadInputTokens ?? 0) + (m.cacheCreationInputTokens ?? 0)
+    })).sort((a, b) => b.tokens - a.tokens);
+    state.stats = {
+      days,
+      hours,
+      models,
+      totalSessions: j.totalSessions ?? 0,
+      totalMessages: j.totalMessages ?? 0,
+      toolCalls: days.reduce((n, d) => n + (d.toolCallCount ?? 0), 0),
+      firstAt: j.firstSessionDate ?? null,
+      longest: j.longestSession ?? null,
+      computedAt: j.lastComputedDate ?? null
+    };
+    state.statsAt = Date.now();
+    state.statsErr = null;
+  } catch (e) {
+    state.statsErr = String(e.message ?? e);
+  }
+  renderAll(["clock", "lifetime"]);
+}
 async function pollToday() {
   try {
     const day = localDay(Date.now());
@@ -4792,6 +4841,21 @@ function render(context, kind) {
     case "chart-cell": {
       const c = views.get(context)?.coords ?? { column: 0, row: 0 };
       return setImage(context, chartCell(c.column, c.row));
+    }
+    case "clock": {
+      const st = state.stats;
+      if (!st) return setImage(context, linesKey("RHYTHM", [{ text: "no stats yet", color: C.dim }]));
+      return setImage(context, clockKey(st.hours, (/* @__PURE__ */ new Date()).getHours()));
+    }
+    case "lifetime": {
+      const st = state.stats;
+      if (!st) return setImage(context, linesKey("LIFETIME", [{ text: "no stats yet", color: C.dim }]));
+      const since = st.firstAt ? new Date(st.firstAt).toLocaleDateString([], { month: "short", day: "numeric" }) : "--";
+      return setImage(context, linesKey("LIFETIME", [
+        { text: `${fmtNum(st.totalMessages)} msgs`, color: C.text },
+        { text: `${fmtNum(st.toolCalls)} tools`, color: C.text },
+        { text: `${st.totalSessions} sessions`, color: C.accent }
+      ], C.accent, since === "--" ? null : since));
     }
     case "today": {
       const t = state.today;
@@ -5425,6 +5489,10 @@ function onKeyDown(context, kind, device) {
     case "today":
       pollToday();
       return showOk(context);
+    case "clock":
+    case "lifetime":
+      pollStats();
+      return showOk(context);
     case "sessions": {
       const n = state.sessions.length;
       if (n === 0) return showAlert(context);
@@ -5535,6 +5603,15 @@ if (process.argv.includes("--selftest")) {
       }
       log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
     }
+    await pollStats();
+    const st = state.stats;
+    if (!st) log("selftest stats: ERROR:", state.statsErr);
+    else {
+      const lag = st.computedAt ? Math.round((Date.now() - new Date(st.computedAt).getTime()) / 864e5) : "?";
+      log(`selftest stats: ${st.days.length}d history, ${st.totalSessions} sessions, ${fmtNum(st.totalMessages)} msgs, ${fmtNum(st.toolCalls)} tool calls, computed ${lag}d ago`);
+      const peak = st.hours.indexOf(Math.max(...st.hours));
+      log(`  busiest hour ${peak}:00; top model ${st.models[0]?.id ?? "?"} at ${fmtNum(st.models[0]?.tokens)} tok`);
+    }
     const t0 = Date.now();
     await pollWeek();
     log(`selftest week (${Date.now() - t0}ms, ${weekCache.size} files):`);
@@ -5617,6 +5694,37 @@ if (process.argv.includes("--selftest")) {
       w = frames.length * (blockW + 34) - 34;
       h = 40 + rows * PITCH;
       log(`tile preview: ${tile} ${cols}x${rows}, busy=${busy}, burn=${fmtNum(burn)}/hr, log=${state.log.length} lines`);
+    } else if (process.argv.includes("--keys")) {
+      await Promise.all([pollStats(), pollToday(), pollBurn(), pollSessions()]);
+      const st = state.stats;
+      const cells = [
+        ["session", gaugeKey("SESSION 5H", state.usage?.fiveHour?.pct ?? 42, "2h 10m left")],
+        ["weekly", gaugeKey("WEEKLY", state.usage?.weekly?.pct ?? 63, "Fable 24%")],
+        ["today", linesKey("TODAY", [
+          { text: `${state.today?.chats ?? "--"} chats`, color: C.text },
+          { text: `${fmtNum(state.today?.msgs)} msgs`, color: C.text },
+          { text: `${fmtNum(state.today?.tokens)} tok`, color: C.accent }
+        ])],
+        ["burn", burnKey(state.burn?.tokensHour ?? null, sessionEta())],
+        ["rhythm", st ? clockKey(st.hours, (/* @__PURE__ */ new Date()).getHours()) : null],
+        ["lifetime", st ? linesKey(
+          "LIFETIME",
+          [
+            { text: `${fmtNum(st.totalMessages)} msgs`, color: C.text },
+            { text: `${fmtNum(st.toolCalls)} tools`, color: C.text },
+            { text: `${st.totalSessions} sessions`, color: C.accent }
+          ],
+          C.accent,
+          st.firstAt ? new Date(st.firstAt).toLocaleDateString([], { month: "short", day: "numeric" }) : null
+        ) : null]
+      ].filter(([, img]) => img);
+      cells.forEach(([lbl, img], i) => {
+        inner += place(img, i * PITCH, 40);
+        inner += label(i * PITCH, 28, lbl);
+      });
+      w = cells.length * PITCH;
+      h = 40 + KEY;
+      log(`keys preview: ${cells.map(([l]) => l).join(", ")}`);
     } else {
       await pollWeek();
       chartMetric = argOf("--metric") ?? "tokens";
@@ -5650,6 +5758,7 @@ if (process.argv.includes("--selftest")) {
     if (Date.now() - state.usageAt > 9e4) pollUsage();
     pollSessions();
     pollToday();
+    pollStats();
   });
   ws.on("close", () => {
     log("socket closed, exiting");
@@ -5705,6 +5814,7 @@ if (process.argv.includes("--selftest")) {
   })();
   setInterval(pollSessions, 5e3);
   setInterval(pollToday, 3e5);
+  setInterval(pollStats, 6e5);
   pollBurn();
   setInterval(pollBurn, 6e4);
   setInterval(() => {

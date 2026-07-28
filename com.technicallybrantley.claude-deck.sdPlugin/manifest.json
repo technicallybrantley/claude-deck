@@ -112,6 +112,26 @@
       "States": [{ "Image": "imgs/model", "ShowTitle": false }]
     },
     {
+      "UUID": "com.technicallybrantley.claude-deck.clock",
+      "Name": "Work Rhythm",
+      "Tooltip": "A 24-hour dial of when you actually use Claude Code, from Claude's own stats cache. Current hour highlighted. Press to re-read.",
+      "Icon": "imgs/clock",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/clock", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.technicallybrantley.claude-deck.lifetime",
+      "Name": "Lifetime Totals",
+      "Tooltip": "Total messages, tool calls and sessions since you started, from Claude's own stats cache. Press to re-read.",
+      "Icon": "imgs/lifetime",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/lifetime", "ShowTitle": false }]
+    },
+    {
       "UUID": "com.technicallybrantley.claude-deck.burn-rate",
       "Name": "Burn Rate",
       "Tooltip": "Tokens per hour over the last hour, plus estimated time until the 5h session cap.",

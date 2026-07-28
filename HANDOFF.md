@@ -308,6 +308,27 @@ throttle can't be mistaken for a normal interval and vice versa. Every successfu
 poll logs `usage: 5h=..% wk=..% next=..s` — check that first when the number
 looks stale.
 
+## stats-cache.json: cheap history, but it lags
+
+`~/.claude/stats-cache.json` is precomputed by Claude Code and gives ~36 days of
+`dailyActivity` (messages, sessions, **toolCallCount**), `dailyModelTokens`,
+`hourCounts`, lifetime totals and `longestSession` — for one file read, versus
+the transcript scan the 7-day chart does. `pollStats()` reads it; the Work Rhythm
+and Lifetime keys are built on it.
+
+Two things that will catch you:
+
+- **It is not live.** The file is recomputed periodically and is routinely
+  several days stale (5 days, when this was written). It is a *history* source.
+  Anything describing "now" has to keep coming from `pollToday()` / `pollBurn()`,
+  which parse transcripts directly. Don't be tempted to replace them with this.
+- **`costUSD` is 0.** It only fills in for API billing; on a subscription it
+  reads zero for every model. There is deliberately no cost key. Check the field
+  is non-zero on the account in question before building one.
+
+`hourCounts` omits hours that never saw activity rather than storing 0, so
+`pollStats()` densifies it to 24 slots — index it directly, don't re-derive.
+
 ## Two different data sources — don't reconcile them
 
 - Session/Weekly/Model gauges hit `GET https://api.anthropic.com/api/oauth/usage`
