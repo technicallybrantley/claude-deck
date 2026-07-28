@@ -62,7 +62,7 @@ Three invariants now hold, and all three matter:
   file read, not a request, so it polls at 15s and takes precedence — an auth
   wait must never inherit a leftover 429 interval. Conversely `usageBackoff` is
   cleared on any non-429 response, or one unrelated error pins the poller at
-  900s.
+  the cap.
 - **A stale reading beats `--`.** The cache TTL is 12h (it exists to survive an
   overnight reboot; the old 30 minutes rejected it exactly then), and
   `usageStale()` labels anything over 4 minutes as "8m old" / "14h old" so a
@@ -307,6 +307,28 @@ poll at reset + 8s on top of this.
 throttle can't be mistaken for a normal interval and vice versa. Every successful
 poll logs `usage: 5h=..% wk=..% next=..s` — check that first when the number
 looks stale.
+
+## The "8m old" incident: overlapping pollers must not compound the backoff
+
+`pollUsage()` has many callers — the main loop, `scheduleResetPoll()`, key
+presses, dial taps, the expired-window safety net. On 2026-07-28 two of them
+landed 11 seconds apart during a throttle, each drew a 429, and the
+double-on-every-429 rule escalated 120s → 240s → 480s in those 11 seconds; the
+gauges then sat labeled "8m old" until the backoff drained. Four rules now
+prevent a recurrence — keep all four:
+
+- **Single flight, 10s floor** (`usagePolling` / `USAGE_SPACING`): the guard
+  lives *inside* `pollUsage()`, so no present or future call site can stack
+  requests.
+- **Escalate only after honoring**: a 429 arriving before the previous backoff
+  has elapsed keeps the current interval — it's the same throttle answering an
+  overlapping request, not proof the wait was too short. `Retry-After` wins
+  outright when the server sends it.
+- **Cap is 5 minutes** (`BACKOFF_CAP`), not 15: past that, a throttle hides
+  more data than it protects.
+- **Requests abort at 15s** (`AbortSignal.timeout`): the main loop `await`s
+  each poll before rescheduling, so one hung socket used to stall *all* future
+  polls for as long as the OS took to give up on it.
 
 ## stats-cache.json: cheap history, but it lags
 

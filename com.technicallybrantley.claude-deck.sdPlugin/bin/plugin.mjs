@@ -4347,7 +4347,12 @@ function pickBucket(o) {
 }
 var USAGE_DELAY_BASE = 9e4;
 var AUTH_RETRY = 15e3;
+var USAGE_TIMEOUT = 15e3;
+var BACKOFF_CAP = 3e5;
+var USAGE_SPACING = 1e4;
 var usageBackoff = 0;
+var last429At = 0;
+var usagePolling = false;
 var authWait = false;
 var authDeadToken = null;
 var lastUsageAttempt = 0;
@@ -4374,6 +4379,8 @@ try {
 } catch {
 }
 async function pollUsage() {
+  if (usagePolling || Date.now() - lastUsageAttempt < USAGE_SPACING) return;
+  usagePolling = true;
   lastUsageAttempt = Date.now();
   try {
     const cred = await readToken();
@@ -4385,11 +4392,18 @@ async function pollUsage() {
         Authorization: `Bearer ${cred.token}`,
         "anthropic-beta": "oauth-2025-04-20",
         "Content-Type": "application/json"
-      }
+      },
+      signal: AbortSignal.timeout(USAGE_TIMEOUT)
     });
     if (res.status === 429) {
       authWait = false;
-      usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 12e4, 9e5);
+      const retryAfter = Number(res.headers.get("retry-after")) * 1e3;
+      if (retryAfter > 0) {
+        usageBackoff = Math.min(retryAfter, BACKOFF_CAP);
+      } else if (!usageBackoff || Date.now() - last429At >= usageBackoff) {
+        usageBackoff = Math.min(usageBackoff ? usageBackoff * 2 : 12e4, BACKOFF_CAP);
+      }
+      last429At = Date.now();
       throw new Error(`usage endpoint HTTP 429 (backing off to ${usageBackoff / 1e3}s)`);
     }
     if (res.status === 401 || res.status === 403) {
@@ -4445,11 +4459,13 @@ async function pollUsage() {
     scheduleResetPoll();
   } catch (e) {
     authWait = e.cause === "auth";
-    state.usageErr = String(e.message ?? e);
+    state.usageErr = e?.name === "TimeoutError" ? `usage request timed out after ${USAGE_TIMEOUT / 1e3}s` : String(e.message ?? e);
     if (state.usageErr !== lastUsageErrLogged) {
       lastUsageErrLogged = state.usageErr;
       log("usage poll failed:", state.usageErr);
     }
+  } finally {
+    usagePolling = false;
   }
   renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate"]);
 }
@@ -4966,7 +4982,8 @@ function send(obj) {
 }
 var setImage = (context, image) => send({ event: "setImage", context, payload: { image, target: 0 } });
 var setTitle = (context) => send({ event: "setTitle", context, payload: { title: "", target: 0 } });
-var showOk = (context) => send({ event: "showOk", context });
+var showOk = () => {
+};
 var showAlert = (context) => send({ event: "showAlert", context });
 var switchProfile = (device, profile) => send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
 var DIAL_METRICS = ["session", "weekly", "model", "burn", "today"];
@@ -5946,7 +5963,7 @@ if (process.argv.includes("--selftest")) {
     state.usage = savedUsage;
     const [savedBackoff, savedWait] = [usageBackoff, authWait];
     log("selftest auth handling:");
-    usageBackoff = 9e5;
+    usageBackoff = BACKOFF_CAP;
     authWait = true;
     log(`  ${"auth wait beats 429 backoff".padEnd(26)} -> ${nextUsageDelay() / 1e3}s`);
     authWait = false;
