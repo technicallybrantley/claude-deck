@@ -112,6 +112,16 @@
       "States": [{ "Image": "imgs/model", "ShowTitle": false }]
     },
     {
+      "UUID": "com.technicallybrantley.claude-deck.task",
+      "Name": "Current Task",
+      "Tooltip": "What Claude is working on right now, in its own words, with progress through its task list. Follows whichever session is busy. Press to re-read.",
+      "Icon": "imgs/task",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/task", "ShowTitle": false }]
+    },
+    {
       "UUID": "com.technicallybrantley.claude-deck.clock",
       "Name": "Work Rhythm",
       "Tooltip": "A 24-hour dial of when you actually use Claude Code, from Claude's own stats cache. Current hour highlighted. Press to re-read.",

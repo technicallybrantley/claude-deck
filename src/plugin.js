@@ -18,6 +18,7 @@ const CREDS_FILE = path.join(CLAUDE_DIR, ".credentials.json");
 const SESSIONS_DIR = path.join(CLAUDE_DIR, "sessions");
 const PROJECTS_DIR = path.join(CLAUDE_DIR, "projects");
 const STATS_CACHE = path.join(CLAUDE_DIR, "stats-cache.json");
+const TASKS_DIR = path.join(CLAUDE_DIR, "tasks");
 const USAGE_URL = "https://api.anthropic.com/api/oauth/usage";
 const githubDir = path.join(os.homedir(), "Documents", "GitHub");
 const DEFAULT_CODE_DIR = fs.existsSync(githubDir) ? githubDir : os.homedir();
@@ -157,6 +158,43 @@ function clockKey(hours, nowHour) {
     ${out}
     <circle cx="${cx}" cy="${cy}" r="7" fill="${C.track}"/>
     <text x="72" y="139" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">busiest ${h12(busiest)}</text>`);
+}
+
+// Greedy wrap by character count. Segoe UI at these sizes averages ~0.52em per
+// character, which is accurate enough for a 144px key and avoids having to
+// measure text in a renderer that has no layout engine.
+function wrapText(str, maxChars, maxLines) {
+  const words = String(str ?? "").split(/\s+/).filter(Boolean);
+  const lines = [];
+  let cur = "";
+  for (const w of words) {
+    if (!cur) cur = w;
+    else if ((cur + " " + w).length <= maxChars) cur += " " + w;
+    else if (lines.length + 1 < maxLines) { lines.push(cur); cur = w; }
+    else { cur = cur + " " + w; break; }        // last line: let it overflow, then clip
+  }
+  if (cur) lines.push(cur);
+  if (lines.length === maxLines && lines[maxLines - 1].length > maxChars)
+    lines[maxLines - 1] = lines[maxLines - 1].slice(0, maxChars - 1).trimEnd() + "…";
+  return lines.slice(0, maxLines);
+}
+
+// What Claude is doing right now, in its own words.
+function taskKey(t) {
+  if (!t) return linesKey("DOING", [{ text: "no task list", color: C.dim }]);
+  const label = t.activeForm ?? t.subject ?? "—";
+  const lines = wrapText(label, 17, 3);
+  const frac = t.total ? t.done / t.total : 0;
+  const body = lines.map((ln, i) =>
+    `<text x="12" y="${58 + i * 22}" font-family="Segoe UI, sans-serif" font-size="16" font-weight="600" fill="${C.text}">${esc(ln)}</text>`).join("");
+  return svgWrap(`
+    <rect x="0" y="0" width="144" height="34" rx="18" fill="${C.panel}"/>
+    <rect x="0" y="17" width="144" height="17" fill="${C.panel}"/>
+    <text x="12" y="24" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" letter-spacing="0.5" fill="${t.blocked ? C.warn : C.accent}">DOING</text>
+    <text x="132" y="24" text-anchor="end" font-family="Segoe UI, sans-serif" font-size="14" fill="${C.dim}">${t.done}/${t.total}</text>
+    ${body}
+    <rect x="12" y="126" width="120" height="8" rx="4" fill="${C.track}"/>
+    <rect x="12" y="126" width="${Math.max(4, 120 * frac).toFixed(1)}" height="8" rx="4" fill="${C.ok}"/>`);
 }
 
 function linesKey(title, rows, accent = C.accent, note = null) {
@@ -601,6 +639,7 @@ const state = {
   week: null,         // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
+  tasks: null,       // { name, activeForm, subject, done, total } for the busiest session
   stats: null,       // long history from stats-cache.json — see pollStats()
   statsAt: 0,
   loggedRaw: false,
@@ -812,6 +851,54 @@ async function pollSessions() {
     if (changed) renderAll(["sessions", "focus-session"]);
   } catch (e) {
     log("sessions poll failed:", String(e));
+  }
+}
+
+// ---------- data: what Claude is actually doing ----------
+// Sessions carry a `sessionId`, and ~/.claude/tasks/<sessionId>/N.json holds that
+// session's todo list. `activeForm` is the present-continuous phrasing ("Adding
+// the current-task key"), which is written for exactly this kind of readout — use
+// it in preference to `subject`.
+//
+// Only live sessions are read: the tasks directory keeps every session that ever
+// had a list, so scanning all of it would mostly be reporting on work that
+// finished days ago.
+async function pollTasks() {
+  try {
+    const live = state.sessions.filter((s) => s.sessionId);
+    // Prefer whoever is actually working; fall back to the most recently touched
+    // so the key still says something useful while everything is idle.
+    const ordered = [...live].sort((a, b) => {
+      const busy = (x) => (x.status && x.status !== "idle" ? 1 : 0);
+      return busy(b) - busy(a) || (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+    });
+    for (const sess of ordered) {
+      const dir = path.join(TASKS_DIR, sess.sessionId);
+      let files;
+      try { files = await fsp.readdir(dir); } catch { continue; }
+      const items = [];
+      for (const f of files) {
+        if (!f.endsWith(".json")) continue;
+        try { items.push(JSON.parse(await fsp.readFile(path.join(dir, f), "utf8"))); } catch {}
+      }
+      if (!items.length) continue;
+      items.sort((a, b) => Number(a.id ?? 0) - Number(b.id ?? 0));
+      const done = items.filter((t) => t.status === "completed").length;
+      const current = items.find((t) => t.status === "in_progress") ?? items.find((t) => t.status === "pending");
+      state.tasks = {
+        name: sess.name,
+        activeForm: current?.activeForm ?? null,
+        subject: current?.subject ?? null,
+        blocked: items.some((t) => t.status !== "completed" && (t.blockedBy ?? []).length > 0),
+        done,
+        total: items.length,
+      };
+      renderAll(["task"]);
+      return;
+    }
+    if (state.tasks) { state.tasks = null; renderAll(["task"]); }
+  } catch (e) {
+    log("tasks poll failed:", String(e));
   }
 }
 
@@ -1259,6 +1346,8 @@ function render(context, kind) {
       const c = views.get(context)?.coords ?? { column: 0, row: 0 };
       return setImage(context, chartCell(c.column, c.row));
     }
+    case "task":
+      return setImage(context, taskKey(state.tasks));
     case "clock": {
       const st = state.stats;
       if (!st) return setImage(context, linesKey("RHYTHM", [{ text: "no stats yet", color: C.dim }]));
@@ -1998,6 +2087,9 @@ function onKeyDown(context, kind, device) {
     case "clock": case "lifetime":
       pollStats();
       return showOk(context);
+    case "task":
+      pollTasks();
+      return showOk(context);
     case "sessions": {
       const n = state.sessions.length;
       if (n === 0) return showAlert(context);
@@ -2116,6 +2208,11 @@ if (process.argv.includes("--selftest")) {
       log(`  ${`${cols}x${rows}`.padEnd(5)} ${bad ? `OFF-KEY ${bad}x` : "always on a key"}, reached ${seen.size}/${cols * rows} keys`);
     }
 
+    await pollTasks();
+    log("selftest tasks:", state.tasks
+      ? `${state.tasks.name}: ${state.tasks.done}/${state.tasks.total} — ${state.tasks.activeForm ?? state.tasks.subject ?? "(none active)"}`
+      : "(no live session has a task list)");
+
     await pollStats();
     const st = state.stats;
     if (!st) log("selftest stats: ERROR:", state.statsErr);
@@ -2230,7 +2327,7 @@ if (process.argv.includes("--selftest")) {
       // The tile and chart previews cover the animated surfaces; this covers the
       // static ones, which otherwise can't be looked at without a physical deck.
       // `npm run preview -- --keys --out keys.svg`
-      await Promise.all([pollStats(), pollToday(), pollBurn(), pollSessions()]);
+      await Promise.all([pollStats(), pollToday(), pollBurn(), pollSessions().then(pollTasks)]);
       const st = state.stats;
       const cells = [
         ["session", gaugeKey("SESSION 5H", state.usage?.fiveHour?.pct ?? 42, "2h 10m left")],
@@ -2240,6 +2337,7 @@ if (process.argv.includes("--selftest")) {
           { text: `${fmtNum(state.today?.msgs)} msgs`, color: C.text },
           { text: `${fmtNum(state.today?.tokens)} tok`, color: C.accent }])],
         ["burn", burnKey(state.burn?.tokensHour ?? null, sessionEta())],
+        ["task", taskKey(state.tasks)],
         ["rhythm", st ? clockKey(st.hours, new Date().getHours()) : null],
         ["lifetime", st ? linesKey("LIFETIME", [
           { text: `${fmtNum(st.totalMessages)} msgs`, color: C.text },
@@ -2286,7 +2384,7 @@ if (process.argv.includes("--selftest")) {
     pushLog("info", "tail", "~/.claude/sessions");
     pushLog("info", "watch", "burn-rate 60s");
     if (Date.now() - state.usageAt > 90_000) pollUsage();
-    pollSessions();
+    pollSessions().then(pollTasks);
     pollToday();
     pollStats();
   });
@@ -2327,7 +2425,7 @@ if (process.argv.includes("--selftest")) {
   });
 
   (function usageLoop() { setTimeout(async () => { await pollUsage(); usageLoop(); }, nextUsageDelay()); })();
-  setInterval(pollSessions, 5_000);
+  setInterval(async () => { await pollSessions(); await pollTasks(); }, 5_000);
   setInterval(pollToday, 300_000);
   setInterval(pollStats, 600_000);   // stats-cache is rewritten rarely
   pollBurn();
