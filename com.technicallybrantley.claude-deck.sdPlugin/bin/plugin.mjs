@@ -4969,6 +4969,47 @@ var setTitle = (context) => send({ event: "setTitle", context, payload: { title:
 var showOk = (context) => send({ event: "showOk", context });
 var showAlert = (context) => send({ event: "showAlert", context });
 var switchProfile = (device, profile) => send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
+var DIAL_METRICS = ["session", "weekly", "model", "burn", "today"];
+var dialIdx = /* @__PURE__ */ new Map();
+var setFeedback = (context, payload) => send({ event: "setFeedback", context, payload });
+function renderDial(context) {
+  const metric = DIAL_METRICS[(dialIdx.get(context) ?? 0) % DIAL_METRICS.length];
+  const u = state.usage;
+  const pctOf = (b) => b?.pct != null ? `${Math.round(b.pct)}%` : "--";
+  let title = "", value = "--", bar = 0;
+  switch (metric) {
+    case "session":
+      title = "Session 5h";
+      value = pctOf(u?.fiveHour);
+      bar = u?.fiveHour?.pct ?? 0;
+      break;
+    case "weekly":
+      title = "Weekly";
+      value = pctOf(u?.weekly);
+      bar = u?.weekly?.pct ?? 0;
+      break;
+    case "model": {
+      const m = (u?.models ?? [])[0];
+      title = m?.name ? `${m.name} 7d` : "Model";
+      value = pctOf(m);
+      bar = m?.pct ?? 0;
+      break;
+    }
+    case "burn": {
+      const t = state.burn?.tokensHour;
+      title = "Burn/hr";
+      value = fmtNum(t);
+      bar = t ? Math.min(100, t / 5e7 * 100) : 0;
+      break;
+    }
+    case "today":
+      title = "Today";
+      value = fmtNum(state.today?.tokens);
+      bar = 0;
+      break;
+  }
+  setFeedback(context, { title, value, indicator: { value: Math.max(0, Math.min(100, Math.round(bar))) } });
+}
 var kindOf = (action) => action.replace("com.technicallybrantley.claude-deck.", "");
 function usageErrSub() {
   const e = state.usageErr ?? "";
@@ -4985,6 +5026,7 @@ function usageStale() {
   return age < 36e5 ? `${Math.round(age / 6e4)}m old` : `${Math.round(age / 36e5)}h old`;
 }
 function render(context, kind) {
+  if (views.get(context)?.controller === "Encoder") return renderDial(context);
   switch (kind) {
     case "usage-session": {
       const b = state.usage?.fiveHour;
@@ -6115,13 +6157,15 @@ if (process.argv.includes("--selftest")) {
         kind,
         settings: msg.payload?.settings ?? {},
         coords: msg.payload?.coordinates ?? { column: 0, row: 0 },
-        device: msg.device
+        device: msg.device,
+        controller: msg.payload?.controller ?? "Keypad"
       });
       setTitle(context);
       if ((kind === "chart-cell" || kind === "chart-open") && Date.now() - lastWeekPoll > 15e3) pollWeek();
       render(context, kind);
     } else if (event === "willDisappear") {
       views.delete(context);
+      dialIdx.delete(context);
       cycle.delete(context);
       focusIdx.delete(context);
     } else if (event === "didReceiveSettings" && action) {
@@ -6134,6 +6178,16 @@ if (process.argv.includes("--selftest")) {
       if (msg.payload?.cmd === "getModels") {
         send({ event: "sendToPropertyInspector", context, payload: { models: (state.usage?.models ?? []).map((m) => m.name) } });
       }
+    } else if (event === "dialRotate") {
+      const n = DIAL_METRICS.length;
+      const step = (msg.payload?.ticks ?? 0) >= 0 ? 1 : -1;
+      dialIdx.set(context, (((dialIdx.get(context) ?? 0) + step) % n + n) % n);
+      renderDial(context);
+    } else if (event === "dialDown" || event === "touchTap") {
+      pollUsage();
+      pollBurn();
+      pollToday();
+      renderDial(context);
     } else if (event === "keyDown" && action) {
       onKeyDown(context, kindOf(action), msg.device ?? views.get(context)?.device);
     }

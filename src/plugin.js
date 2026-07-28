@@ -1379,6 +1379,39 @@ const showAlert = (context) => send({ event: "showAlert", context });
 const switchProfile = (device, profile) =>
   send({ event: "switchToProfile", context: pluginUUID, device, payload: profile ? { profile } : {} });
 
+// ---------- Stream Deck + : dial and touch strip ----------
+// The built-in $B1 layout is title + icon + value + bar, which *is* a usage
+// gauge — so the encoder path draws no SVG at all, it just fills the layout in.
+// Rotating cycles which number is on the strip, so one dial covers what several
+// keys do on a Keypad.
+const DIAL_METRICS = ["session", "weekly", "model", "burn", "today"];
+const dialIdx = new Map();   // context -> index into DIAL_METRICS
+
+const setFeedback = (context, payload) => send({ event: "setFeedback", context, payload });
+
+function renderDial(context) {
+  const metric = DIAL_METRICS[(dialIdx.get(context) ?? 0) % DIAL_METRICS.length];
+  const u = state.usage;
+  const pctOf = (b) => (b?.pct != null ? `${Math.round(b.pct)}%` : "--");
+  let title = "", value = "--", bar = 0;
+  switch (metric) {
+    case "session": title = "Session 5h"; value = pctOf(u?.fiveHour); bar = u?.fiveHour?.pct ?? 0; break;
+    case "weekly":  title = "Weekly";     value = pctOf(u?.weekly);   bar = u?.weekly?.pct ?? 0; break;
+    case "model": {
+      const m = (u?.models ?? [])[0];
+      title = m?.name ? `${m.name} 7d` : "Model"; value = pctOf(m); bar = m?.pct ?? 0; break;
+    }
+    case "burn": {
+      const t = state.burn?.tokensHour;
+      // No natural 0-100 for a rate, so the bar is scaled against 50M/hr — enough
+      // that a heavy session fills it without pinning at the first request.
+      title = "Burn/hr"; value = fmtNum(t); bar = t ? Math.min(100, (t / 5e7) * 100) : 0; break;
+    }
+    case "today": title = "Today"; value = fmtNum(state.today?.tokens); bar = 0; break;
+  }
+  setFeedback(context, { title, value, indicator: { value: Math.max(0, Math.min(100, Math.round(bar))) } });
+}
+
 const kindOf = (action) => action.replace("com.technicallybrantley.claude-deck.", "");
 
 // What a gauge says when there is no reading at all. "sign in?" was wrong for
@@ -1405,6 +1438,10 @@ function usageStale() {
 }
 
 function render(context, kind) {
+  // A dial has no image, only a layout. Routing here rather than per-case means
+  // an action placed on an encoder can never fall through to setImage, which the
+  // Stream Deck simply ignores.
+  if (views.get(context)?.controller === "Encoder") return renderDial(context);
   switch (kind) {
     case "usage-session": {
       const b = state.usage?.fiveHour;
@@ -2686,6 +2723,7 @@ if (process.argv.includes("--selftest")) {
         settings: msg.payload?.settings ?? {},
         coords: msg.payload?.coordinates ?? { column: 0, row: 0 },
         device: msg.device,
+        controller: msg.payload?.controller ?? "Keypad",
       });
       setTitle(context);
       // The chart profile appearing is the signal that the user just opened it
@@ -2693,6 +2731,7 @@ if (process.argv.includes("--selftest")) {
       render(context, kind);
     } else if (event === "willDisappear") {
       views.delete(context);
+      dialIdx.delete(context);
       cycle.delete(context);
       focusIdx.delete(context);
     } else if (event === "didReceiveSettings" && action) {
@@ -2702,6 +2741,14 @@ if (process.argv.includes("--selftest")) {
       if (msg.payload?.cmd === "getModels") {
         send({ event: "sendToPropertyInspector", context, payload: { models: (state.usage?.models ?? []).map((m) => m.name) } });
       }
+    } else if (event === "dialRotate") {
+      const n = DIAL_METRICS.length;
+      const step = (msg.payload?.ticks ?? 0) >= 0 ? 1 : -1;
+      dialIdx.set(context, (((dialIdx.get(context) ?? 0) + step) % n + n) % n);
+      renderDial(context);
+    } else if (event === "dialDown" || event === "touchTap") {
+      pollUsage(); pollBurn(); pollToday();
+      renderDial(context);
     } else if (event === "keyDown" && action) {
       onKeyDown(context, kindOf(action), msg.device ?? views.get(context)?.device);
     }

@@ -356,6 +356,23 @@ live config, so it backs up first, identifies its own entries **by the loopback
 URL rather than by position** (a reinstall repairs instead of duplicating), and
 `--remove` reverses it without touching anyone else's hooks. `--dry-run` prints.
 
+## Stream Deck + dials
+
+`usage-session` declares `Controllers: ["Keypad", "Encoder"]`, so the same action
+behaves as a key or a dial. Two things worth knowing:
+
+- **A dial has no image, only a layout.** `render()` routes to `renderDial()` up
+  front on `views.get(context).controller === "Encoder"` rather than per-case, so
+  an action on an encoder can never fall through to `setImage` — which the Stream
+  Deck silently ignores, giving you a blank strip and no error.
+- **`$B1` is title + icon + value + bar**, i.e. a usage gauge already. The dial
+  path draws no SVG at all; it fills the layout in via `setFeedback`. Don't
+  reimplement the gauge here.
+
+Rotating cycles `DIAL_METRICS` (session / weekly / model / burn / today), so one
+dial covers what five keys do. Burn has no natural 0-100, so its bar is scaled
+against 50M/hr. **Untested — written without a Stream Deck + to hand.**
+
 ## macOS: implemented from research, NOT tested on a Mac
 
 Written on Windows against verified docs. Windows behaviour is unchanged and was

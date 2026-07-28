@@ -32,6 +32,8 @@ The usage gauges show the **same session/weekly percentages Claude Desktop and C
 | **Pipes** | The screensaver, in blocks. Pipe count tracks how many sessions are working. |
 | **Scuttle** | A pixel critter that walks your keys while Claude works and sleeps when it doesn't. Press to poke it. |
 
+On a **Stream Deck +**, the Session Usage action also works as a dial: rotate to cycle through session, weekly, per-model, burn rate and today; push or tap the strip to refresh.
+
 Bar colors: green < 60%, amber 60–85%, red ≥ 85%. At 90%+ the gauge pulses red.
 The sessions key shows an animated dot cycle while any session is actively working.
 

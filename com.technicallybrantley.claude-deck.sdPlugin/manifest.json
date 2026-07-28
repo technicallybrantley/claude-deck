@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Claude Deck",
-  "Version": "1.7.0.0",
+  "Version": "1.8.0.0",
   "Author": "Brantley",
   "Description": "Live Claude usage limits, running Claude Code sessions, and quick-launch keys for Claude Desktop.",
   "UUID": "com.technicallybrantley.claude-deck",
@@ -31,9 +31,17 @@
     {
       "UUID": "com.technicallybrantley.claude-deck.usage-session",
       "Name": "Session Usage (5h)",
-      "Tooltip": "Live 5-hour session limit usage for your Claude subscription. Press to refresh.",
+      "Tooltip": "Live 5-hour session limit usage for your Claude subscription. Press to refresh. On a Stream Deck + dial, rotate to cycle through session, weekly, per-model, burn rate and today.",
       "Icon": "imgs/session",
-      "Controllers": ["Keypad"],
+      "Controllers": ["Keypad", "Encoder"],
+      "Encoder": {
+        "layout": "$B1",
+        "TriggerDescription": {
+          "Rotate": "Cycle metric",
+          "Push": "Refresh",
+          "Touch": "Refresh"
+        }
+      },
       "SupportedInMultiActions": false,
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/session", "ShowTitle": false }]
