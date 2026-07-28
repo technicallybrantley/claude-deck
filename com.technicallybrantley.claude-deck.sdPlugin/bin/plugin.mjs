@@ -2267,7 +2267,7 @@ var require_websocket = __commonJS({
     "use strict";
     var EventEmitter = __require("events");
     var https = __require("https");
-    var http = __require("http");
+    var http2 = __require("http");
     var net = __require("net");
     var tls = __require("tls");
     var { randomBytes, createHash } = __require("crypto");
@@ -2809,7 +2809,7 @@ var require_websocket = __commonJS({
       }
       const defaultPort = isSecure ? 443 : 80;
       const key = randomBytes(16).toString("base64");
-      const request = isSecure ? https.request : http.request;
+      const request = isSecure ? https.request : http2.request;
       const protocolSet = /* @__PURE__ */ new Set();
       let perMessageDeflate;
       opts.createConnection = opts.createConnection || (isSecure ? tlsConnect : netConnect);
@@ -3305,7 +3305,7 @@ var require_websocket_server = __commonJS({
   "node_modules/ws/lib/websocket-server.js"(exports, module) {
     "use strict";
     var EventEmitter = __require("events");
-    var http = __require("http");
+    var http2 = __require("http");
     var { Duplex } = __require("stream");
     var { createHash } = __require("crypto");
     var extension2 = require_extension();
@@ -3386,8 +3386,8 @@ var require_websocket_server = __commonJS({
           );
         }
         if (options.port != null) {
-          this._server = http.createServer((req, res) => {
-            const body = http.STATUS_CODES[426];
+          this._server = http2.createServer((req, res) => {
+            const body = http2.STATUS_CODES[426];
             res.writeHead(426, {
               "Content-Length": body.length,
               "Content-Type": "text/plain"
@@ -3676,7 +3676,7 @@ var require_websocket_server = __commonJS({
       this.destroy();
     }
     function abortHandshake(socket, code, message, headers) {
-      message = message || http.STATUS_CODES[code];
+      message = message || http2.STATUS_CODES[code];
       headers = {
         Connection: "close",
         "Content-Type": "text/html",
@@ -3685,7 +3685,7 @@ var require_websocket_server = __commonJS({
       };
       socket.once("finish", socket.destroy);
       socket.end(
-        `HTTP/1.1 ${code} ${http.STATUS_CODES[code]}\r
+        `HTTP/1.1 ${code} ${http2.STATUS_CODES[code]}\r
 ` + Object.keys(headers).map((h) => `${h}: ${headers[h]}`).join("\r\n") + "\r\n\r\n" + message
       );
     }
@@ -3717,6 +3717,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, execFile } from "node:child_process";
+import http from "node:http";
 import { fileURLToPath } from "node:url";
 var PLUGIN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 var PLUGIN_VERSION = "";
@@ -3860,6 +3861,25 @@ function wrapText(str, maxChars, maxLines) {
   if (lines.length === maxLines && lines[maxLines - 1].length > maxChars)
     lines[maxLines - 1] = lines[maxLines - 1].slice(0, maxChars - 1).trimEnd() + "\u2026";
   return lines.slice(0, maxLines);
+}
+function attentionKey(a, hooksOn, phase) {
+  if (!hooksOn) return svgWrap(`
+    <text x="72" y="60" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">ATTENTION</text>
+    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">hooks off</text>
+    <text x="72" y="110" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="${C.track}">npm run install-hooks</text>`);
+  if (!a) return svgWrap(`
+    <circle cx="72" cy="66" r="26" fill="none" stroke="${C.ok}" stroke-width="6"/>
+    <path d="M60 66 l8 9 l16 -19" fill="none" stroke="${C.ok}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">all clear</text>`);
+  const secs = Math.max(0, Math.round((Date.now() - a.at) / 1e3));
+  const wait = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  const what = { permission_prompt: "permission", idle_prompt: "waiting", agent_needs_input: "needs input", elicitation_dialog: "input needed" }[a.kind] ?? a.kind;
+  return svgWrap(`
+    <rect x="3" y="3" width="138" height="138" rx="16" fill="none" stroke="${C.bad}" stroke-width="6" opacity="${[0.3, 0.65, 1][phase % 3]}"/>
+    <text x="72" y="40" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="1" fill="${C.bad}">NEEDS YOU</text>
+    <text x="72" y="72" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" fill="${C.text}">${esc(what)}</text>
+    <text x="72" y="98" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(String(a.name).slice(0, 16))}</text>
+    <text x="72" y="126" text-anchor="middle" font-family="${MONO}" font-size="18" font-weight="700" fill="${C.warn}">${wait}</text>`, false);
 }
 function taskKey(t) {
   if (!t) return linesKey("DOING", [{ text: "no task list", color: C.dim }]);
@@ -4276,6 +4296,10 @@ var state = {
   // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
+  attention: null,
+  // { kind, name, cwd, at } — Claude is blocked waiting on the user
+  hookAt: 0,
+  // last hook received; 0 means the hooks aren't installed
   tasks: null,
   // { name, activeForm, subject, done, total } for the busiest session
   stats: null,
@@ -4453,6 +4477,92 @@ async function pollSessions() {
   } catch (e) {
     log("sessions poll failed:", String(e));
   }
+}
+var HOOK_PORT = 45822;
+var HOOK_BLOCKING = /* @__PURE__ */ new Set(["permission_prompt", "idle_prompt", "agent_needs_input", "elicitation_dialog"]);
+function startHookServer() {
+  const srv = http.createServer((req, res) => {
+    if (req.method !== "POST") {
+      res.writeHead(405).end();
+      return;
+    }
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 65536) req.destroy();
+    });
+    req.on("end", () => {
+      res.writeHead(204).end();
+      let j;
+      try {
+        j = JSON.parse(body);
+      } catch {
+        return;
+      }
+      try {
+        onHook(j);
+      } catch (e) {
+        log("hook handler failed:", String(e));
+      }
+    });
+  });
+  srv.on("error", (e) => {
+    log(`hook listener unavailable (${e.code ?? e}); continuing without hooks`);
+  });
+  srv.listen(HOOK_PORT, "127.0.0.1", () => log(`hook listener on 127.0.0.1:${HOOK_PORT}`));
+}
+function onHook(j) {
+  const ev = j.hook_event_name ?? j.event ?? "";
+  const name = sessionNameFor(j) ?? path.basename(j.cwd ?? "") ?? "claude";
+  if (!state.hookAt) log("hooks connected \u2014 first event received");
+  state.hookAt = Date.now();
+  switch (ev) {
+    case "Notification": {
+      const m = j.matcher ?? j.notification_type ?? j.type ?? "";
+      if (HOOK_BLOCKING.has(m)) {
+        state.attention = { kind: m, name, cwd: j.cwd ?? null, at: Date.now() };
+        log(`attention: ${name} needs you (${m})`);
+        pushLog("busy", name, m.replace(/_/g, " "));
+        renderAll(["attention"]);
+      }
+      return;
+    }
+    // Any of these mean the turn moved on, so whatever was blocking is resolved.
+    case "Stop":
+    case "SessionEnd":
+    case "StopFailure":
+      if (state.attention) {
+        log(`attention: cleared by ${ev}`);
+        state.attention = null;
+        renderAll(["attention"]);
+      }
+      if (ev === "Stop") pushLog("idle", name, "turn done");
+      return;
+    case "SessionStart":
+      pushLog("start", name, "session start");
+      break;
+    case "SubagentStart":
+      pushLog("start", name, `agent ${j.agent_type ?? ""}`.trim());
+      break;
+    case "SubagentStop":
+      pushLog("end", name, `agent ${j.agent_type ?? ""} done`.trim());
+      break;
+    case "TaskCreated":
+      pushLog("info", name, "task created");
+      break;
+    case "TaskCompleted":
+      pushLog("info", name, "task done");
+      pollTasks();
+      break;
+    default:
+      return;
+  }
+  renderAll(["attention"]);
+}
+function sessionNameFor(j) {
+  const id = j.session_id ?? j.sessionId;
+  if (!id) return null;
+  return state.sessions.find((s) => s.sessionId === id)?.name ?? null;
 }
 async function pollTasks() {
   try {
@@ -4926,6 +5036,8 @@ function render(context, kind) {
       const c = views.get(context)?.coords ?? { column: 0, row: 0 };
       return setImage(context, chartCell(c.column, c.row));
     }
+    case "attention":
+      return setImage(context, attentionKey(state.attention, state.hookAt > 0, animPhase));
     case "task":
       return setImage(context, taskKey(state.tasks));
     case "clock": {
@@ -5582,6 +5694,15 @@ function onKeyDown(context, kind, device) {
     case "task":
       pollTasks();
       return showOk(context);
+    case "attention": {
+      const a = state.attention;
+      if (!a) return showOk(context);
+      const sess = state.sessions.find((x) => x.name === a.name) ?? state.sessions.find((x) => x.cwd && x.cwd === a.cwd);
+      state.attention = null;
+      renderAll(["attention"]);
+      if (sess) return focusWindow(sess, context);
+      return showOk(context);
+    }
     case "sessions": {
       const n = state.sessions.length;
       if (n === 0) return showAlert(context);
@@ -5910,6 +6031,7 @@ if (process.argv.includes("--selftest")) {
   }, 5e3);
   setInterval(pollToday, 3e5);
   setInterval(pollStats, 6e5);
+  startHookServer();
   pollBurn();
   setInterval(pollBurn, 6e4);
   setInterval(() => {
@@ -5943,6 +6065,7 @@ if (process.argv.includes("--selftest")) {
     animPhase = (animPhase + 1) % 3;
     const kinds = [];
     if (state.sessions.some((s) => s.status && s.status !== "idle")) kinds.push("sessions");
+    if (state.attention) kinds.push("attention");
     if (state.usage?.fiveHour?.pct >= 90) kinds.push("usage-session");
     if (state.usage?.weekly?.pct >= 90) kinds.push("usage-weekly");
     if ((state.usage?.models ?? []).some((m) => m.pct >= 90)) kinds.push("usage-model");
@@ -5950,5 +6073,5 @@ if (process.argv.includes("--selftest")) {
     const expired = [state.usage?.fiveHour, state.usage?.weekly].some((b) => b?.resetsAt && Date.now() - new Date(b.resetsAt).getTime() > 5e3);
     if (expired && !state.usageErr && Date.now() - lastUsageAttempt > 3e4) pollUsage();
   }, 600);
-  setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate"]), 3e4);
+  setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate", "attention"]), 3e4);
 }

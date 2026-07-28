@@ -1,7 +1,7 @@
 {
   "$schema": "https://schemas.elgato.com/streamdeck/plugins/manifest.json",
   "Name": "Claude Deck",
-  "Version": "1.6.0.0",
+  "Version": "1.7.0.0",
   "Author": "Brantley",
   "Description": "Live Claude usage limits, running Claude Code sessions, and quick-launch keys for Claude Desktop.",
   "UUID": "com.technicallybrantley.claude-deck",
@@ -110,6 +110,16 @@
       "SupportedInMultiActions": false,
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/model", "ShowTitle": false }]
+    },
+    {
+      "UUID": "com.technicallybrantley.claude-deck.attention",
+      "Name": "Needs You",
+      "Tooltip": "Goes red the instant Claude Code blocks on a permission prompt or asks for input, with how long it has been waiting. Press to jump to that session's window. Requires the hooks: npm run install-hooks.",
+      "Icon": "imgs/attention",
+      "Controllers": ["Keypad"],
+      "SupportedInMultiActions": false,
+      "UserTitleEnabled": false,
+      "States": [{ "Image": "imgs/attention", "ShowTitle": false }]
     },
     {
       "UUID": "com.technicallybrantley.claude-deck.task",

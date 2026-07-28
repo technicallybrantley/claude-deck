@@ -329,6 +329,33 @@ Two things that will catch you:
 `hourCounts` omits hours that never saw activity rather than storing 0, so
 `pollStats()` densifies it to 24 slots — index it directly, don't re-derive.
 
+## Hooks: the one push path in a pull-shaped plugin
+
+Everything else here finds out by looking. That is fine for numbers and useless
+for "Claude is blocked waiting on you" — by the time a 5s poll notices, you have
+wandered off. `startHookServer()` listens on **127.0.0.1:45822** and Claude Code
+POSTs to it, so the Attention key can go red the instant a permission prompt
+appears.
+
+- **Loopback only, deliberately.** It accepts unauthenticated POSTs. All they can
+  do is light up a key, but it still has no business being reachable off-box.
+- **Failure is not fatal.** Port already taken (a second instance, usually) just
+  logs and continues in poll-only mode.
+- **Not every Notification means a human is needed.** `HOOK_BLOCKING` is the
+  allow-list; anything else is informational and must not raise the alert.
+- **The "hooks off" state is load-bearing.** Without it, a plugin with no hook
+  wiring looks exactly like one where nothing needs you — the worst possible
+  failure mode for an alert. `state.hookAt` is 0 until the first event ever
+  arrives, and the key says so.
+- The hooks are `"type": "http"`, so nothing shells out. If the plugin isn't
+  running, loopback refuses the connection immediately — a fast no-op, not a
+  stall in someone's turn.
+
+`tools/install-hooks.mjs` merges them into `~/.claude/settings.json`. It edits a
+live config, so it backs up first, identifies its own entries **by the loopback
+URL rather than by position** (a reinstall repairs instead of duplicating), and
+`--remove` reverses it without touching anyone else's hooks. `--dry-run` prints.
+
 ## Two different data sources — don't reconcile them
 
 - Session/Weekly/Model gauges hit `GET https://api.anthropic.com/api/oauth/usage`

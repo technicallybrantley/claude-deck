@@ -7,6 +7,7 @@ import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, execFile } from "node:child_process";
+import http from "node:http";
 import { fileURLToPath } from "node:url";
 
 const PLUGIN_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -177,6 +178,30 @@ function wrapText(str, maxChars, maxLines) {
   if (lines.length === maxLines && lines[maxLines - 1].length > maxChars)
     lines[maxLines - 1] = lines[maxLines - 1].slice(0, maxChars - 1).trimEnd() + "…";
   return lines.slice(0, maxLines);
+}
+
+// The one key meant to be read from across the room. Three states, and the
+// "hooks not installed" one matters: without it a plugin with no hook wiring
+// looks identical to one where nothing needs you, which is the worst possible
+// failure for an alert.
+function attentionKey(a, hooksOn, phase) {
+  if (!hooksOn) return svgWrap(`
+    <text x="72" y="60" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">ATTENTION</text>
+    <text x="72" y="88" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">hooks off</text>
+    <text x="72" y="110" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="12" fill="${C.track}">npm run install-hooks</text>`);
+  if (!a) return svgWrap(`
+    <circle cx="72" cy="66" r="26" fill="none" stroke="${C.ok}" stroke-width="6"/>
+    <path d="M60 66 l8 9 l16 -19" fill="none" stroke="${C.ok}" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="72" y="122" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="17" font-weight="600" fill="${C.dim}">all clear</text>`);
+  const secs = Math.max(0, Math.round((Date.now() - a.at) / 1000));
+  const wait = secs < 60 ? `${secs}s` : `${Math.floor(secs / 60)}m ${secs % 60}s`;
+  const what = { permission_prompt: "permission", idle_prompt: "waiting", agent_needs_input: "needs input", elicitation_dialog: "input needed" }[a.kind] ?? a.kind;
+  return svgWrap(`
+    <rect x="3" y="3" width="138" height="138" rx="16" fill="none" stroke="${C.bad}" stroke-width="6" opacity="${[0.3, 0.65, 1][phase % 3]}"/>
+    <text x="72" y="40" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" font-weight="700" letter-spacing="1" fill="${C.bad}">NEEDS YOU</text>
+    <text x="72" y="72" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="20" font-weight="700" fill="${C.text}">${esc(what)}</text>
+    <text x="72" y="98" text-anchor="middle" font-family="Segoe UI, sans-serif" font-size="15" fill="${C.dim}">${esc(String(a.name).slice(0, 16))}</text>
+    <text x="72" y="126" text-anchor="middle" font-family="${MONO}" font-size="18" font-weight="700" fill="${C.warn}">${wait}</text>`, false);
 }
 
 // What Claude is doing right now, in its own words.
@@ -639,6 +664,8 @@ const state = {
   week: null,         // { days: [{ day, label, tokens, msgs, isToday }], at }
   burn: null,
   pctHistory: [],
+  attention: null,   // { kind, name, cwd, at } — Claude is blocked waiting on the user
+  hookAt: 0,         // last hook received; 0 means the hooks aren't installed
   tasks: null,       // { name, activeForm, subject, done, total } for the busiest session
   stats: null,       // long history from stats-cache.json — see pollStats()
   statsAt: 0,
@@ -852,6 +879,87 @@ async function pollSessions() {
   } catch (e) {
     log("sessions poll failed:", String(e));
   }
+}
+
+// ---------- hooks: Claude Code pushes, instead of us polling ----------
+// Everything else here is pull: the plugin finds out because it looked. That is
+// fine for numbers and useless for "Claude is blocked waiting on you" — by the
+// time a 5s poll notices, you have already wandered off. Claude Code's hooks can
+// POST straight at us, so the deck can go red the instant a permission prompt
+// appears.
+//
+// Loopback only. This takes unauthenticated POSTs, and while all it can do is
+// light up a key, it has no business being reachable off the machine.
+const HOOK_PORT = 45822;
+// Notification matchers that mean "a human is needed", as opposed to the ones
+// that are merely informational.
+const HOOK_BLOCKING = new Set(["permission_prompt", "idle_prompt", "agent_needs_input", "elicitation_dialog"]);
+
+function startHookServer() {
+  const srv = http.createServer((req, res) => {
+    if (req.method !== "POST") { res.writeHead(405).end(); return; }
+    let body = "";
+    // A hook should never be able to wedge a turn, so cap the body and always
+    // answer, whatever the payload turns out to be.
+    req.on("data", (c) => { body += c; if (body.length > 65536) req.destroy(); });
+    req.on("end", () => {
+      res.writeHead(204).end();
+      let j; try { j = JSON.parse(body); } catch { return; }
+      try { onHook(j); } catch (e) { log("hook handler failed:", String(e)); }
+    });
+  });
+  srv.on("error", (e) => {
+    // Another instance, or something else on the port. Not fatal: the plugin
+    // simply keeps working in poll-only mode and the Attention key says so.
+    log(`hook listener unavailable (${e.code ?? e}); continuing without hooks`);
+  });
+  srv.listen(HOOK_PORT, "127.0.0.1", () => log(`hook listener on 127.0.0.1:${HOOK_PORT}`));
+}
+
+function onHook(j) {
+  const ev = j.hook_event_name ?? j.event ?? "";
+  const name = sessionNameFor(j) ?? path.basename(j.cwd ?? "") ?? "claude";
+  // First hook through the door proves the wiring end to end, which is otherwise
+  // invisible — the Attention key can't tell "installed and quiet" from "never
+  // installed" without it.
+  if (!state.hookAt) log("hooks connected — first event received");
+  state.hookAt = Date.now();
+  switch (ev) {
+    case "Notification": {
+      const m = j.matcher ?? j.notification_type ?? j.type ?? "";
+      if (HOOK_BLOCKING.has(m)) {
+        state.attention = { kind: m, name, cwd: j.cwd ?? null, at: Date.now() };
+        log(`attention: ${name} needs you (${m})`);
+        pushLog("busy", name, m.replace(/_/g, " "));
+        renderAll(["attention"]);
+      }
+      return;
+    }
+    // Any of these mean the turn moved on, so whatever was blocking is resolved.
+    case "Stop": case "SessionEnd": case "StopFailure":
+      if (state.attention) {
+        log(`attention: cleared by ${ev}`);
+        state.attention = null;
+        renderAll(["attention"]);
+      }
+      if (ev === "Stop") pushLog("idle", name, "turn done");
+      return;
+    case "SessionStart": pushLog("start", name, "session start"); break;
+    case "SubagentStart": pushLog("start", name, `agent ${j.agent_type ?? ""}`.trim()); break;
+    case "SubagentStop": pushLog("end", name, `agent ${j.agent_type ?? ""} done`.trim()); break;
+    case "TaskCreated": pushLog("info", name, "task created"); break;
+    case "TaskCompleted": pushLog("info", name, "task done"); pollTasks(); break;
+    default: return;
+  }
+  renderAll(["attention"]);
+}
+
+// Hooks carry session_id; map it back to the friendly session name the rest of
+// the plugin already uses so the log and the key agree on what to call things.
+function sessionNameFor(j) {
+  const id = j.session_id ?? j.sessionId;
+  if (!id) return null;
+  return state.sessions.find((s) => s.sessionId === id)?.name ?? null;
 }
 
 // ---------- data: what Claude is actually doing ----------
@@ -1346,6 +1454,8 @@ function render(context, kind) {
       const c = views.get(context)?.coords ?? { column: 0, row: 0 };
       return setImage(context, chartCell(c.column, c.row));
     }
+    case "attention":
+      return setImage(context, attentionKey(state.attention, state.hookAt > 0, animPhase));
     case "task":
       return setImage(context, taskKey(state.tasks));
     case "clock": {
@@ -2090,6 +2200,18 @@ function onKeyDown(context, kind, device) {
     case "task":
       pollTasks();
       return showOk(context);
+    case "attention": {
+      const a = state.attention;
+      if (!a) return showOk(context);
+      // Pressing it should take you to the thing that needs you, not merely
+      // silence the alert. Cleared either way so the key can't get stuck lit.
+      const sess = state.sessions.find((x) => x.name === a.name) ??
+                   state.sessions.find((x) => x.cwd && x.cwd === a.cwd);
+      state.attention = null;
+      renderAll(["attention"]);
+      if (sess) return focusWindow(sess, context);
+      return showOk(context);
+    }
     case "sessions": {
       const n = state.sessions.length;
       if (n === 0) return showAlert(context);
@@ -2428,6 +2550,7 @@ if (process.argv.includes("--selftest")) {
   setInterval(async () => { await pollSessions(); await pollTasks(); }, 5_000);
   setInterval(pollToday, 300_000);
   setInterval(pollStats, 600_000);   // stats-cache is rewritten rarely
+  startHookServer();
   pollBurn();
   setInterval(pollBurn, 60_000);
   // The 7-day scan is the most expensive poll (whole transcripts, not a tail),
@@ -2464,6 +2587,7 @@ if (process.argv.includes("--selftest")) {
     animPhase = (animPhase + 1) % 3;
     const kinds = [];
     if (state.sessions.some((s) => s.status && s.status !== "idle")) kinds.push("sessions");
+    if (state.attention) kinds.push("attention");
     if (state.usage?.fiveHour?.pct >= 90) kinds.push("usage-session");
     if (state.usage?.weekly?.pct >= 90) kinds.push("usage-weekly");
     if ((state.usage?.models ?? []).some((m) => m.pct >= 90)) kinds.push("usage-model");
@@ -2474,5 +2598,5 @@ if (process.argv.includes("--selftest")) {
     if (expired && !state.usageErr && Date.now() - lastUsageAttempt > 30_000) pollUsage();
   }, 600);
   // Keep countdowns ("1h 5m left") fresh between polls
-  setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate"]), 30_000);
+  setInterval(() => renderAll(["usage-session", "usage-weekly", "usage-model", "burn-rate", "attention"]), 30_000);
 }

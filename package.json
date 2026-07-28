@@ -8,7 +8,8 @@
     "profile": "node tools/make-chart-profile.mjs",
     "build": "node tools/make-chart-profile.mjs && esbuild src/plugin.js --bundle --platform=node --format=esm --outfile=com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --external:bufferutil --external:utf-8-validate --banner:js=\"import { createRequire as __cr } from 'node:module'; const require = __cr(import.meta.url);\"",
     "selftest": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --selftest",
-    "preview": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --preview"
+    "preview": "node com.technicallybrantley.claude-deck.sdPlugin/bin/plugin.mjs --preview",
+    "install-hooks": "node tools/install-hooks.mjs"
   },
   "dependencies": {
     "ws": "^8.18.0"

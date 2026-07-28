@@ -1,0 +1,29 @@
+{
+  "_comment": "Claude Deck hook wiring. Merged into ~/.claude/settings.json by `npm run install-hooks`. Every entry is an http hook posting to the plugin's loopback listener, so nothing here shells out. If the plugin isn't running the connection is refused immediately on loopback, which is a fast no-op rather than a stall.",
+  "hooks": {
+    "Notification": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "StopFailure": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "SessionStart": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "SubagentStart": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "SubagentStop": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ],
+    "TaskCompleted": [
+      { "hooks": [{ "type": "http", "url": "http://127.0.0.1:45822/hook", "timeout": 2 }] }
+    ]
+  }
+}
