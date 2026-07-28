@@ -70,6 +70,7 @@
       "Tooltip": "Open the Claude Desktop app.",
       "Icon": "imgs/launch",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "States": [{ "Image": "imgs/launch" }]
     },
     {
@@ -78,6 +79,7 @@
       "Tooltip": "Trigger Claude's quick-chat hotkey (Ctrl+Alt+Space).",
       "Icon": "imgs/chat",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "States": [{ "Image": "imgs/chat" }]
     },
     {
@@ -86,6 +88,7 @@
       "Tooltip": "Open a new chat on claude.ai in your browser.",
       "Icon": "imgs/web",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "States": [{ "Image": "imgs/web" }]
     },
     {
@@ -94,6 +97,7 @@
       "Tooltip": "Open a terminal running Claude Code in your GitHub folder.",
       "Icon": "imgs/code",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "States": [{ "Image": "imgs/code" }]
     },
     {
@@ -124,6 +128,7 @@
       "Icon": "imgs/project",
       "PropertyInspectorPath": "pi/pi.html",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/project", "ShowTitle": false }]
     },
@@ -144,6 +149,7 @@
       "Icon": "imgs/prompt",
       "PropertyInspectorPath": "pi/pi.html",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/prompt", "ShowTitle": false }]
     },
@@ -235,6 +241,7 @@
       "Icon": "imgs/custom",
       "PropertyInspectorPath": "pi/pi.html",
       "Controllers": ["Keypad"],
+      "SupportedInMultiActions": true,
       "UserTitleEnabled": false,
       "States": [{ "Image": "imgs/custom", "ShowTitle": false }]
     }
