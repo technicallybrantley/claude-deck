@@ -1717,9 +1717,6 @@ const SPRITE_DEFAULT = {
           " ####### ",
           "#########",
           "  #####  "],
-  agent: [" # ",
-          "###",
-          "# #"],
 };
 let SPRITE = SPRITE_DEFAULT;
 try {
@@ -2096,23 +2093,20 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   // on every other shape.
   const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
-  let agent = SPRITE.agent;
   const facing = dancing ? (Math.floor(sim.actT / 3) % 2 ? -sim.dir : sim.dir)
     : sim.act === "spin" ? (sim.actT % 2 ? -sim.dir : sim.dir) : sim.dir;
-  if (facing < 0) { pose = sprFlip(pose); agent = sprFlip(agent); }
+  if (facing < 0) pose = sprFlip(pose);
   // Ride first, so he climbs the ladder rather than the ladder covering him.
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
   out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   if (sim.party > 0) out += sprPartyArt(sim, lc, lr);
-  // SDK agents trail behind in the smaller pose. pollSessions() already counts
-  // them separately from the sessions the user can actually see.
-  for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
-    // Even cell sizes only: quarter cells are drawn at half a cell, and an odd
-    // size rounds that half down into a seam.
-    const ax = x - sim.dir * (sw * 0.5 + i * 40);
-    out += sprDraw(agent, ax, y0 + sprPY() * 2, 8, 12, ox);
-  }
+  // There used to be a trail of smaller sprites here, one per live SDK agent.
+  // It can't work: he is 132 of a key's 144px, so a follower has nowhere to go
+  // but the gap between two keys — where it sat, sliced by the key edge, for the
+  // 2.5–4s he spends parked. That is exactly the "never come to rest between
+  // keys" rule the rest of this tile is built around. Anything reintroducing a
+  // trail has to move it in key units the way he does, not at a pixel offset.
   if (!walking) {
     // One 'z' so a frozen key still reads as asleep rather than as a dead tile.
     const zx = x + (sim.dir > 0 ? sw - 6 : -14) - ox;

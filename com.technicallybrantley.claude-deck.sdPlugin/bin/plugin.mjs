@@ -5221,11 +5221,6 @@ var SPRITE_DEFAULT = {
     " ####### ",
     "#########",
     "  #####  "
-  ],
-  agent: [
-    " # ",
-    "###",
-    "# #"
   ]
 };
 var SPRITE = SPRITE_DEFAULT;
@@ -5526,20 +5521,12 @@ function scuttleCellKey(lc, lr, cols, rows, t, sim, busy) {
   const bob = (moving && stepping ? -2 : 0) + breathe;
   const y0 = ry + bob + hop - lr * KEY;
   let pose = !walking ? SPRITE.sleep : stepping ? SPRITE.walkB : SPRITE.walkA;
-  let agent = SPRITE.agent;
   const facing = dancing ? Math.floor(sim.actT / 3) % 2 ? -sim.dir : sim.dir : sim.act === "spin" ? sim.actT % 2 ? -sim.dir : sim.dir : sim.dir;
-  if (facing < 0) {
-    pose = sprFlip(pose);
-    agent = sprFlip(agent);
-  }
+  if (facing < 0) pose = sprFlip(pose);
   let out = walking ? sprRideArt(sim, x, y0, sw, sh, ox, lr) : "";
   out += sprDraw(pose, x, y0, sprPX(), sprPY(), ox);
   if (walking) out += sprActArt(sim, x, y0, sw, sh, ox);
   if (sim.party > 0) out += sprPartyArt(sim, lc, lr);
-  for (let i = 1; walking && i <= Math.min(3, state.agents ?? 0); i++) {
-    const ax = x - sim.dir * (sw * 0.5 + i * 40);
-    out += sprDraw(agent, ax, y0 + sprPY() * 2, 8, 12, ox);
-  }
   if (!walking) {
     const zx = x + (sim.dir > 0 ? sw - 6 : -14) - ox;
     if (zx > -20 && zx < KEY + 20)
